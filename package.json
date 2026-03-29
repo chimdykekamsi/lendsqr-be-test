@@ -1,0 +1,55 @@
+{
+  "name": "chimdike-anagboso-lendsqr-be-test",
+  "version": "1.0.0",
+  "description": "A wallet service that supports wallet creation, wallet-to-wallet transfers,",
+  "homepage": "https://github.com/chimdykekamsi/lendsqr-be-test#readme",
+  "bugs": {
+    "url": "https://github.com/chimdykekamsi/lendsqr-be-test/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chimdykekamsi/lendsqr-be-test.git"
+  },
+  "license": "ISC",
+  "author": "Chimdyke Kamsi",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate:make": "node -r dotenv/config ./node_modules/knex/bin/cli.js  migrate:make  -x ts --knexfile src/knexfile.ts",
+    "migrate:latest": "node -r dotenv/config ./node_modules/knex/bin/cli.js migrate:latest --knexfile src/knexfile.ts",
+    "migrate:rollback": "node -r dotenv/config ./node_modules/knex/bin/cli.js migrate:rollback --knexfile src/knexfile.ts"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
+    "ioredis": "^5.10.1",
+    "jsonwebtoken": "^9.0.3",
+    "knex": "^3.2.7",
+    "mysql2": "^3.20.0",
+    "tsc-alias": "^1.8.16",
+    "tsconfig-paths": "^4.2.0",
+    "uuid": "^13.0.0",
+    "uuidv4": "^6.2.13",
+    "winston": "^3.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/knex": "^0.15.2",
+    "@types/node": "^25.5.0",
+    "nodemon": "^3.1.14",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^6.0.2"
+  }
+}
