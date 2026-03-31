@@ -1,22 +1,33 @@
-import "dotenv/config";
-import { env } from "@/configs/env";
 import { createApp } from "./app";
+import db from "./configs/db";
+import { env } from "./configs/env";
 import { winstonLogger } from "./utils/logger";
 
-const app = createApp();
 
+const PORT = Number(env.PORT) || 3000;
 
-const PORT = env.PORT || 4000;
-app.listen(PORT, async () => {
-    winstonLogger.info(`🚀 Server running on port ${PORT}`);
-});
+const startServer = async (): Promise<void> => {
+    try {
+        // Verify database connection
+        await db.raw("SELECT 1");
+        winstonLogger.info("Database connection established");
+        const app = createApp();
+        app.listen(PORT, () => {
+            winstonLogger.info(`API running on port ${PORT}`);
+            winstonLogger.info(`Environment: ${env.NODE_ENV}`);
+            winstonLogger.info(`Health check: http://localhost:${PORT}/health`);
+        });
+    } catch (error) {
+        winstonLogger.error("Failed to start server:", error);
+        process.exit(1);
+    }
+};
 
-process.on("unhandledRejection", (reason, promise) => {
-    winstonLogger.error("Unhandled Rejection at:", promise, "reason:", reason);
-    process.exit(1);
-});
+startServer();
 
-process.on("uncaughtException", (err) => {
-    winstonLogger.error("Uncaught Exception:", err);
-    process.exit(1);
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+    winstonLogger.info("SIGTERM received — closing DB connections...");
+    await db.destroy();
+    process.exit(0);
 });

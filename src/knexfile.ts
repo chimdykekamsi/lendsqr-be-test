@@ -1,31 +1,48 @@
 import type { Knex } from "knex";
-import { env } from "./configs/env.js";
+import { env } from "./configs/env";
 
-export enum Environment {
-  development = "development",
-  test = "test",
-  production = "production",
-}
-
-const baseConfig: Knex.Config = {
-  client: "mysql2",
-  connection: {
-    host: env.DB_HOST,
-    port: env.DB_PORT,
-    user: env.DB_USER,
-    password: env.DB_PASSWORD || "",
-    database: env.DB_NAME,
-    timezone: "Z" //enforce to UTC
-  },
-  migrations: {
-    extension: "ts",
-    directory: "./database/migrations",
-  },
+const baseConnection = {
+  host: env.DB_HOST,
+  user: env.DB_USER,
+  password: env.DB_PASSWORD || "",
+  database: env.DB_NAME,
+  timezone: "Z",
 };
 
 const config: Record<string, Knex.Config> = {
-  [Environment.development]: baseConfig,
-  [Environment.production]: baseConfig,
+  development: {
+    client: "mysql2",
+    connection: baseConnection,
+    migrations: {
+      directory: "./database/migrations",
+      extension: "ts",
+    },
+    seeds: {
+      directory: "./database/seeds",
+      extension: "ts",
+    },
+    pool: { min: 2, max: 10 },
+  },
+
+  test: {
+    client: "mysql2",
+    connection: { ...baseConnection, database: `${env.DB_NAME}_test` },
+    migrations: {
+      directory: "./database/migrations",
+      extension: "ts",
+    },
+    pool: { min: 2, max: 10 },
+  },
+
+  production: {
+    client: "mysql2",
+    connection: baseConnection,
+    migrations: {
+      extension: "ts",
+      directory: "./database/migrations",
+    },
+    pool: { min: 2, max: 20 },
+  },
 };
 
 export default config;

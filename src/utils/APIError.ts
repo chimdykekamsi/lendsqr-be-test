@@ -49,6 +49,10 @@ export class APIError extends Error {
         return new APIError(500, message);
     }
 
+    static UnprocessableEntity(message = "Unprocessable Entity") {
+        return new APIError(422, message);
+    }
+
     // 🔍 Parse raw errors (Zod, Prisma, etc.)
     static from(err: unknown): APIError {
         if (err instanceof APIError) return err;
