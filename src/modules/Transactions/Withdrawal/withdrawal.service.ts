@@ -7,8 +7,9 @@ import { WalletType } from "../../Wallet/wallet.type";
 import { APIError } from "@/utils/APIError";
 import { ledgerService } from "../../Ledger/ledger.service";
 import { transactionRepository } from "../transaction.repo";
-import { WithdrawalRow, CreateWithdrawalDTO } from "./withdrawal.type";
+import { WithdrawalRow } from "./withdrawal.type";
 import { withdrawalRepository } from "./withdrawal.repo";
+import { winstonLogger } from "@/utils/logger";
 
 export class WithdrawalService {
     private readonly transactionType = TransactionType.WITHDRAWAL;
@@ -32,13 +33,14 @@ export class WithdrawalService {
 
             // Check if user has sufficient balance
             if (userWallet.balance < transactionAmount) {
+                winstonLogger.info(userWallet.balance)
                 throw APIError.BadRequest("Insufficient balance");
             }
 
             // Get or create HOLDING system wallet
-            let holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
+            const holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
             if (!holdingWallet) {
-                holdingWallet = await walletService.createSystemWallet(WalletType.HOLDING, trx);
+                throw APIError.Internal("Holding wallet not found");
             }
 
             // Create the transaction
@@ -58,16 +60,24 @@ export class WithdrawalService {
             await walletService.decrementBalance(userWallet.id, transaction.amount, trx);
             await walletService.incrementBalance(holdingWallet.id, transaction.amount, trx);
 
+            const { credit, debit } = {
+                credit: {
+                    walletId: holdingWallet.id,
+                    balanceBefore: holdingBalanceBefore,
+                    balanceAfter: holdingBalanceBefore + transaction.amount,
+                },
+                debit: {
+                    walletId: userWallet.id,
+                    balanceBefore: userBalanceBefore,
+                    balanceAfter: userBalanceBefore - transaction.amount,
+                },
+            }
             // Create ledger entries
             await ledgerService.createDoubleEntry(
-                holdingWallet.id, // credit holding wallet
-                userWallet.id, // debit user wallet
                 transaction.id,
                 transaction.amount,
-                holdingBalanceBefore,
-                holdingBalanceBefore + transaction.amount,
-                userBalanceBefore,
-                userBalanceBefore - transaction.amount,
+                credit,
+                debit,
                 trx
             );
 
@@ -75,8 +85,7 @@ export class WithdrawalService {
             const withdrawalId = await this.repository.create({
                 transaction_id: transaction.id,
                 wallet_id: userWallet.id,
-                bank_account_details: bankAccountDetails,
-                provider: "MockBank",
+                bank_account_id: bankAccountDetails,
             }, trx);
 
             if (!withdrawalId) throw APIError.Internal("Failed to create withdrawal record");
@@ -86,7 +95,7 @@ export class WithdrawalService {
                 throw APIError.Internal("Failed to retrieve withdrawal record");
             }
 
-            return { transaction, withdrawal };
+            return { transaction: transactionService.sanitize(transaction), withdrawal };
         });
     }
 
@@ -102,15 +111,17 @@ export class WithdrawalService {
                 throw APIError.Conflict("Transaction is not in pending state");
             }
 
+            // Get the holding wallet
+            const holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
+            if (!holdingWallet) {
+                throw APIError.Internal("Holding wallet not found");
+            }
+            const holdingBalanceBefore = holdingWallet.balance;
+
+
             if (success) {
                 // Update transaction status to SUCCESSFUL
                 const updatedTransaction = await transactionService.updateTransactionStatus(transaction.id, TransactionStatus.SUCCESSFUL, trx);
-
-                // Get the holding wallet
-                const holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
-                if (!holdingWallet) {
-                    throw APIError.Internal("Holding wallet not found");
-                }
 
                 // Get the system wallet
                 const systemWallet = await walletService.findSystemWallet(WalletType.SYSTEM, trx);
@@ -119,75 +130,86 @@ export class WithdrawalService {
                 }
 
                 // Get current balances
-                const holdingBalanceBefore = holdingWallet.balance;
                 const systemBalanceBefore = systemWallet.balance;
 
                 // Debit holding wallet, credit system wallet
                 await walletService.decrementBalance(holdingWallet.id, transaction.amount, trx);
                 await walletService.incrementBalance(systemWallet.id, transaction.amount, trx);
 
+                const { credit, debit } = {
+                    credit: {
+                        walletId: systemWallet.id,
+                        balanceBefore: systemBalanceBefore,
+                        balanceAfter: systemBalanceBefore + transaction.amount,
+                    },
+                    debit: {
+                        walletId: holdingWallet.id,
+                        balanceBefore: holdingBalanceBefore,
+                        balanceAfter: holdingBalanceBefore - transaction.amount,
+                    }
+                };
+
+
                 // Create ledger entries
                 await ledgerService.createDoubleEntry(
-                    systemWallet.id, // credit system wallet
-                    holdingWallet.id, // debit holding wallet
                     transaction.id,
                     transaction.amount,
-                    systemBalanceBefore,
-                    systemBalanceBefore + transaction.amount,
-                    holdingBalanceBefore,
-                    holdingBalanceBefore - transaction.amount,
+                    credit,
+                    debit,
                     trx
                 );
 
-                return { transaction: updatedTransaction };
+                return { transaction: transactionService.sanitize(updatedTransaction) };
             } else {
                 // Create reversal transaction
                 const reversalTransaction = await transactionService.createTransaction({
                     type: TransactionType.REVERSAL,
                     user_id: transaction.user_id!,
                     amount: transaction.amount,
+                    status: TransactionStatus.SUCCESSFUL,
                     reference: generateReference("REV"),
                     parent_transaction_id: transaction.id,
                     description: `Reversal for failed withdrawal ${transaction.reference}`,
                 }, trx);
 
                 // Update original transaction to FAILED
-                await transactionService.updateTransactionStatus(transaction.id, TransactionStatus.FAILED, trx);
-
-                // Get the holding wallet
-                const holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
-                if (!holdingWallet) {
-                    throw APIError.Internal("Holding wallet not found");
-                }
-
+                const updatedFailedTransaction = await transactionService.updateTransactionStatus(transaction.id, TransactionStatus.FAILED, trx);
                 // Get the user's wallet
                 const userWallet = await walletService.findByUserIdRaw(transaction.user_id!, trx);
                 if (!userWallet) {
                     throw APIError.NotFound("User wallet not found");
                 }
 
-                // Get current balances
-                const holdingBalanceBefore = holdingWallet.balance;
                 const userBalanceBefore = userWallet.balance;
 
                 // Debit holding wallet, credit user wallet
                 await walletService.decrementBalance(holdingWallet.id, transaction.amount, trx);
                 await walletService.incrementBalance(userWallet.id, transaction.amount, trx);
 
+                const { credit, debit } = {
+                    credit: {
+                        walletId: userWallet.id,
+                        balanceBefore: userBalanceBefore,
+                        balanceAfter: userBalanceBefore + transaction.amount,
+                    },
+                    debit: {
+                        walletId: holdingWallet.id,
+                        balanceBefore: holdingBalanceBefore,
+                        balanceAfter: holdingBalanceBefore - transaction.amount,
+                    }
+                };
+
+
                 // Create ledger entries for reversal
                 await ledgerService.createDoubleEntry(
-                    userWallet.id, // credit user wallet
-                    holdingWallet.id, // debit holding wallet
                     reversalTransaction.id,
                     transaction.amount,
-                    userBalanceBefore,
-                    userBalanceBefore + transaction.amount,
-                    holdingBalanceBefore,
-                    holdingBalanceBefore - transaction.amount,
+                    credit,
+                    debit,
                     trx
                 );
 
-                return { transaction: await transactionRepository.findById(transaction.id, trx)!, reversalTransaction };
+                return { transaction: transactionService.sanitize(updatedFailedTransaction), reversalTransaction: transactionService.sanitize(reversalTransaction) };
             }
         });
     }

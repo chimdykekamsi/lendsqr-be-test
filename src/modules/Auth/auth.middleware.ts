@@ -3,6 +3,7 @@ import { JwtPayload } from "./auth.type";
 import { APIError } from "@/utils/APIError";
 import { authService } from "./auth.service";
 import { userRepository } from "../User/user.repo";
+import { winstonLogger } from "@/utils/logger";
 
 export const authenticate = async (
   req: Request,
@@ -28,7 +29,8 @@ export const authenticate = async (
       email: user.email
     };
     next();
-  } catch {
-    throw APIError.Unauthorized("Invalid or expired token");
+  } catch (error) {
+    winstonLogger.error("Authentication failed", { error });
+    throw error;
   }
 };

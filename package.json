@@ -15,7 +15,7 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npx tsc-alias",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/server.ts",
     "migrate:make": "node -r dotenv/config ./node_modules/knex/bin/cli.js  migrate:make  -x ts --knexfile src/knexfile.ts",
@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/jest": "^29.5.8",
     "@types/jsonwebtoken": "^9.0.5",
     "@types/node": "^20.10.0",

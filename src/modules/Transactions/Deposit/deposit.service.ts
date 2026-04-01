@@ -45,7 +45,7 @@ export class DepositService {
                 paymentUrl: `https://mockpay.com/pay/${transaction.reference}`
             };
 
-            return { transaction, paymentDetails };
+            return { transaction: transactionService.sanitize(transaction), paymentDetails };
         });
     }
 
@@ -84,16 +84,26 @@ export class DepositService {
             await walletService.incrementBalance(userWallet.id, transaction.amount, trx);
             await walletService.decrementBalance(systemWallet.id, transaction.amount, trx);
 
+            const { credit, debit } = {
+                credit: {
+                    walletId: userWallet.id,
+                    balanceBefore: userBalanceBefore,
+                    balanceAfter: userBalanceBefore + transaction.amount,
+                },
+                debit: {
+                    walletId: systemWallet.id,
+                    balanceBefore: systemBalanceBefore,
+                    balanceAfter: systemBalanceBefore - transaction.amount,
+                }
+            };
+
+
             // Create ledger entries
             await ledgerService.createDoubleEntry(
-                userWallet.id, // credit user wallet
-                systemWallet.id, // debit system wallet
                 transaction.id,
                 transaction.amount,
-                userBalanceBefore,
-                userBalanceBefore + transaction.amount,
-                systemBalanceBefore,
-                systemBalanceBefore - transaction.amount,
+                credit,
+                debit,
                 trx
             );
 
@@ -105,14 +115,16 @@ export class DepositService {
                 provider: "MockPay",
             }, trx);
 
+            // console.log({ fundingId });
             if (!fundingId) throw APIError.Internal("Failed to create funding record");
 
             const funding = await this.repository.findById(fundingId, trx);
+            // console.log({ funding })
             if (!funding) {
                 throw APIError.Internal("Failed to create funding record");
             }
 
-            return { transaction: updatedTransaction, funding };
+            return { transaction: transactionService.sanitize(updatedTransaction), funding };
         });
     }
 }

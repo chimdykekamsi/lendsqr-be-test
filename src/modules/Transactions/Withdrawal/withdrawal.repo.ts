@@ -1,11 +1,11 @@
 import { Knex } from "knex";
 import db from "@/configs/db";
-import { WithdrawalRow, CreateWithdrawalDTO } from "./withdrawal.type";
+import { WithdrawalRow, WithdrawFundsDTO } from "./withdrawal.type";
 
 export class WithdrawalRepository {
     private readonly tableName = "withdrawals";
 
-    async create(dto: CreateWithdrawalDTO, database: Knex | Knex.Transaction = db): Promise<number> {
+    async create(dto: WithdrawFundsDTO, database: Knex | Knex.Transaction = db): Promise<number> {
         const [id] = await database(this.tableName).insert(dto).returning("id");
         return id;
     }

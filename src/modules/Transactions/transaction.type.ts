@@ -1,3 +1,7 @@
+import { formatAmount } from "@/utils/helpers";
+import { transactionService } from "./transaction.service";
+import z from "zod";
+
 export enum Currency {
     NGN = "NGN"
 }
@@ -39,4 +43,16 @@ export interface CreateTransactionDTO {
     reference: string;
     parent_transaction_id?: number;
     description?: string;
+    status?: TransactionStatus
 }
+
+export const TransactionQuerySchema = z.object({
+    transaction_type: z.enum(TransactionType).optional(),
+    status: z.enum(TransactionStatus).optional(),
+    amount_min: z.coerce.number().optional(),
+    amount_max: z.coerce.number().optional(),
+    date_from: z.coerce.date().optional(),
+    date_to: z.coerce.date().optional(),
+    limit: z.coerce.number().optional(),
+    page: z.coerce.number().optional()
+})
