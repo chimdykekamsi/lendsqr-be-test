@@ -1,33 +1,29 @@
+import dotenv from "dotenv";
 import { z } from "zod";
-import "dotenv/config";
+
+dotenv.config();
 
 const envSchema = z.object({
-    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-    PORT: z.coerce.number().default(4000),
-
-    LOG_LEVEL: z.enum(["error", "warn", "info", "debug"]).default("info"),
-
-    // Database
+    NODE_ENV: z
+        .enum(["development", "production", "test"])
+        .default("development"),
+    PORT: z.string().default("3000"),
     DB_HOST: z.string().default("localhost"),
-    DB_PORT: z.coerce.number().default(3306),
-    DB_USER: z.string().default("root"),
-    DB_PASSWORD: z.string().optional(),
+    DB_PORT: z.string().default("3306"),
+    DB_USER: z.string(),
+    DB_PASSWORD: z.string(),
     DB_NAME: z.string(),
-    ADJUTOR_BASE_URL: z.string(),
+    JWT_SECRET: z.string(),
     ADJUTOR_API_KEY: z.string(),
-
-    // Redis (optional)
-    REDIS_URL: z.string().optional(),
-    REDIS_HOST: z.string().default("localhost"),
-    REDIS_PORT: z.coerce.number().default(6379),
-    REDIS_PASSWORD: z.string().optional(),
+    ADJUTOR_BASE_URL: z
+        .string()
+        .default("https://adjutor.lendsqr.com/v2"),
 });
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-    console.error("❌ Invalid environment variables:");
-    console.error(parsed.error.flatten().fieldErrors);
+    console.error("❌ Invalid environment variables:", parsed.error.format());
     process.exit(1);
 }
 

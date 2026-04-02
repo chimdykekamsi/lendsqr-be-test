@@ -1,31 +1,9 @@
+import { idempotencyService } from "@/modules/Idempotency/idempotency.service";
 import crypto from "crypto";
+import { Request, Response } from "express";
 import { uuid } from "uuidv4";
-
-export const formatPhoneNumber = (phoneNumber: string, code: string): string => {
-    // Remove all non-digit characters
-    const digits = phoneNumber.replace(/\D/g, '');
-    if (digits.startsWith(code)) {
-        return `+${digits}`;
-    }
-    // if starts with 0, remove the 0 and add country code
-    if (digits.startsWith('0')) {
-        return `+${code}${digits.substring(1)}`;
-    }
-    return `+${code}${digits}`;
-}
-
-export const generateCode = (length: number = 6): string => {
-    let code = '';
-    for (let i = 0; i < length; i++) {
-        code += Math.floor(Math.random() * 10).toString();
-    }
-    return code;
-}
-
-export const slugify = (value: string) =>
-    value.toLowerCase().trim().replace(/\s+/g, "_");
-
-// ─── Reference Generation ────────────────────────────────────────────────────
+import { APIResponse } from "./APIResponse";
+import { Currency, CURRENCY_CONFIG } from "@/modules/Transactions/transaction.type";
 
 export const generateReference = (prefix: string): string => {
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -42,12 +20,36 @@ export const hashObject = (obj: unknown): string => {
         .digest("hex");
 };
 
-// ─── Amount Validation ───────────────────────────────────────────────────────
+export const formatAmount = (dbAmount: number, currencyConfig: typeof CURRENCY_CONFIG[Currency]): number => {
+    return Number((dbAmount / currencyConfig.multiplier).toFixed(currencyConfig.decimal_places));
+}
 
-export const isValidAmount = (amount: number): boolean => {
-    return Number.isInteger(amount) && amount > 0;
-};
-
-export const toNaira = (kobo: number): string => {
-    return `₦${(kobo / 100).toFixed(2)}`;
+/**
+ * @param controller 
+ * @returns API response with idempotency handling. The controller should return an object with the following structure:
+ * {
+ *   message: string,
+ *  data: any,
+ *  statusCode: number
+ * }
+ */
+export const idempotentControllerWrapper = (controller: Function) => {
+    return async (req: Request, res: Response) => {
+        try {
+            const result = await controller(req, res);
+            if (req.idempotencyKey) {
+                idempotencyService.completeKey(req.user!.id, req.idempotencyKey!, {
+                    message: result.message,
+                    data: result.data,
+                    statusCode: result.statusCode,
+                });
+            }
+            return APIResponse.success(res, result.message, result.data, result.statusCode);
+        } catch (error) {
+            if (req.idempotencyKey) {
+                idempotencyService.deleteKey(req.user!.id, req.idempotencyKey!);
+            }
+            throw error;
+        }
+    };
 };
