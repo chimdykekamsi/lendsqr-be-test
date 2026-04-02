@@ -128,7 +128,7 @@ describe("DepositService", () => {
                 created_at: new Date(),
                 updated_at: new Date()
             };
-            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue({ transaction: mockTransaction });
 
             // Mock transactionService.updateTransactionStatus
             const updatedTransaction = {
