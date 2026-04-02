@@ -3,13 +3,13 @@ import { transactionService } from "../transaction.service";
 import { Currency, CURRENCY_CONFIG, TransactionType, TransactionRow, TransactionStatus } from "../transaction.type";
 import { generateReference } from "@/utils/helpers";
 import { walletService } from "../../Wallet/wallet.service";
+import { WalletType } from "../../Wallet/wallet.type";
 import { APIError } from "@/utils/APIError";
 import { ledgerService } from "../../Ledger/ledger.service";
 import { TransferRow, CreateTransferDTO } from "./transfer.type";
 import { transferRepository } from "./transfer.repo";
 
 export class TransferService {
-    private readonly transactionType = TransactionType.TRANSFER;
     private readonly currencyConfig = CURRENCY_CONFIG[Currency.NGN];
     private readonly repository = transferRepository;
 
@@ -18,7 +18,11 @@ export class TransferService {
         receiver_user_id: number,
         amount: number,
         description?: string
-    ): Promise<{ transaction: TransactionRow; transfer: TransferRow }> {
+    ): Promise<{
+        senderTransaction: TransactionRow;
+        receiverTransaction: TransactionRow;
+        transfer: TransferRow
+    }> {
         const transactionAmount = Math.round(amount * this.currencyConfig.multiplier);
 
         // Prevent self-transfer
@@ -28,7 +32,7 @@ export class TransferService {
 
         return db.transaction(async (trx) => {
             // Get sender's wallet
-            const senderWallet = await walletService.findByUserIdRaw(sender_user_id, trx);
+            const senderWallet = await walletService.findByUserIdRaw(sender_user_id, trx, true);
             if (!senderWallet) {
                 throw APIError.NotFound("Sender wallet not found");
             }
@@ -44,44 +48,83 @@ export class TransferService {
                 throw APIError.BadRequest("Insufficient balance");
             }
 
-            // Create the transaction
-            const transaction = await transactionService.createTransaction({
-                type: this.transactionType,
+            // Get or create HOLDING wallet for intermediary transfer
+            const holdingWallet = await walletService.findSystemWallet(WalletType.HOLDING, trx);
+            if (!holdingWallet) {
+                throw APIError.Internal("Holding wallet not found");
+            }
+
+            // Create TRANSFER transaction for sender (money leaving sender's wallet)
+            const withdrawalTransaction = await transactionService.createTransaction({
+                type: TransactionType.TRANSFER,
                 user_id: sender_user_id,
                 amount: transactionAmount,
                 status: TransactionStatus.SUCCESSFUL,
-                reference: generateReference("TRF"),
+                reference: generateReference("TRF-WD"),
                 description: description || `Transfer to user ${receiver_user_id}`,
             }, trx);
 
-            // Get current balances
+            // Create FUNDING transaction for receiver (money entering receiver's wallet)
+            const fundingTransaction = await transactionService.createTransaction({
+                type: TransactionType.FUNDING,
+                user_id: receiver_user_id,
+                amount: transactionAmount,
+                status: TransactionStatus.SUCCESSFUL,
+                reference: generateReference("TRF-FD"),
+                description: description || `Transfer from user ${sender_user_id}`,
+            }, trx);
+
+            // Get balances for ledger entries
             const senderBalanceBefore = senderWallet.balance;
             const receiverBalanceBefore = receiverWallet.balance;
+            const holdingBalanceBefore = holdingWallet.balance;
 
-            // Perform the transfer: debit sender, credit receiver
-            await walletService.decrementBalance(senderWallet.id, transaction.amount, trx);
-            await walletService.incrementBalance(receiverWallet.id, transaction.amount, trx);
+            // Perform the transfer via holding wallet:
+            // 1. Debit sender's wallet, credit holding wallet (WITHDRAWAL leg)
+            await walletService.decrementBalance(senderWallet.id, transactionAmount, trx);
+            await walletService.incrementBalance(holdingWallet.id, transactionAmount, trx);
 
-            // Create ledger entries
+            // Create ledger entries for WITHDRAWAL transaction
             await ledgerService.createDoubleEntry(
-                transaction.id,
-                transaction.amount,
+                withdrawalTransaction.id,
+                transactionAmount,
                 {
-                    walletId: receiverWallet.id,
-                    balanceBefore: receiverBalanceBefore,
-                    balanceAfter: receiverBalanceBefore + transaction.amount,
+                    walletId: holdingWallet.id,
+                    balanceBefore: holdingBalanceBefore,
+                    balanceAfter: holdingBalanceBefore + transactionAmount,
                 },
                 {
                     walletId: senderWallet.id,
                     balanceBefore: senderBalanceBefore,
-                    balanceAfter: senderBalanceBefore - transaction.amount,
+                    balanceAfter: senderBalanceBefore - transactionAmount,
                 },
                 trx
             );
 
-            // Create transfer record
+            // 2. Debit holding wallet, credit receiver's wallet (FUNDING leg)
+            await walletService.decrementBalance(holdingWallet.id, transactionAmount, trx);
+            await walletService.incrementBalance(receiverWallet.id, transactionAmount, trx);
+
+            // Create ledger entries for FUNDING transaction
+            await ledgerService.createDoubleEntry(
+                fundingTransaction.id,
+                transactionAmount,
+                {
+                    walletId: receiverWallet.id,
+                    balanceBefore: receiverBalanceBefore,
+                    balanceAfter: receiverBalanceBefore + transactionAmount,
+                },
+                {
+                    walletId: holdingWallet.id,
+                    balanceBefore: holdingBalanceBefore + transactionAmount,
+                    balanceAfter: holdingBalanceBefore,
+                },
+                trx
+            );
+
+            // Create transfer record linking to the withdrawal transaction (as the primary)
             const transferId = await this.repository.create({
-                transaction_id: transaction.id,
+                transaction_id: withdrawalTransaction.id,
                 sender_wallet_id: senderWallet.id,
                 receiver_wallet_id: receiverWallet.id,
             }, trx);
@@ -93,7 +136,12 @@ export class TransferService {
                 throw APIError.Internal("Failed to retrieve transfer record");
             }
 
-            return { transaction: transactionService.sanitize(transaction), transfer };
+            // Return both transactions for completeness
+            return {
+                senderTransaction: transactionService.sanitize(withdrawalTransaction),
+                receiverTransaction: transactionService.sanitize(fundingTransaction),
+                transfer
+            };
         });
     }
 }

@@ -38,9 +38,10 @@ export class WalletService {
 
     async findByUserIdRaw(
         user_id: number,
-        database: Knex | Knex.Transaction = db
+        database: Knex | Knex.Transaction = db,
+        lock: boolean = false
     ): Promise<WalletRow> {
-        const wallet = await this.repository.findByUserId(user_id, database);
+        const wallet = await this.repository.findByUserId(user_id, database, lock);
         if (!wallet) {
             throw new Error("Wallet not found");
         }

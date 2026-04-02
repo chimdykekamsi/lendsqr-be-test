@@ -18,8 +18,20 @@ export class WalletRepository {
         return id || null;
     }
 
-    async findByUserId(user_id: number, database: Knex | Knex.Transaction = db): Promise<WalletRow | undefined> {
-        return database<WalletRow>(this.table).where({ user_id }).first();
+    async findByUserId(
+        user_id: number,
+        database: Knex | Knex.Transaction = db,
+        lock: boolean = false
+    ): Promise<WalletRow | undefined> {
+        let query = database<WalletRow>("wallets")
+            .where({ user_id })
+            .first();
+
+        if (lock && "forUpdate" in query) {
+            query = query.forUpdate();
+        }
+
+        return query;
     }
 
     async findById(id: number, database: Knex | Knex.Transaction = db): Promise<WalletRow | null> {

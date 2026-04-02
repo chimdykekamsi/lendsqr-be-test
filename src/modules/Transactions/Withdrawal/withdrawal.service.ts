@@ -26,7 +26,7 @@ export class WithdrawalService {
 
         return db.transaction(async (trx) => {
             // Get the user's MAIN wallet
-            const userWallet = await walletService.findByUserIdRaw(user_id, trx);
+            const userWallet = await walletService.findByUserIdRaw(user_id, trx, true);
             if (!userWallet) {
                 throw APIError.NotFound("User wallet not found");
             }

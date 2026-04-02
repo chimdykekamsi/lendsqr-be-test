@@ -15,7 +15,7 @@ const startServer = async (): Promise<void> => {
         app.listen(PORT, () => {
             winstonLogger.info(`API running on port ${PORT}`);
             winstonLogger.info(`Environment: ${env.NODE_ENV}`);
-            winstonLogger.info(`Health check: http://localhost:${PORT}/health`);
+            winstonLogger.info(`Health check: /health`);
         });
     } catch (error) {
         winstonLogger.error("Failed to start server:", error);

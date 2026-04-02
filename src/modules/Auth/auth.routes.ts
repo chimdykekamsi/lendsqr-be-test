@@ -20,7 +20,7 @@ authRouter.post(
 
 authRouter.post(
   "/register",
-  rateLimiter(5, 60), // Limit to 5 requests per hour per IP
+  // rateLimiter(10, 60), // Limit to 5 requests per hour per IP
   validate(createUserSchema),
   userController.createUser
 )

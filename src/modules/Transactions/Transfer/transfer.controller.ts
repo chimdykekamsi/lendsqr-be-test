@@ -21,7 +21,11 @@ export class TransferController {
 
         return {
             message: "Transfer completed successfully",
-            data: result,
+            data: {
+                senderTransaction: result.senderTransaction,
+                receiverTransaction: result.receiverTransaction,
+                transfer: result.transfer
+            },
             statusCode: 201,
         };
     });
