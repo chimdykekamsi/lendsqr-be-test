@@ -1,12 +1,13 @@
 import type { Knex } from "knex";
 import { env } from "./configs/env";
 
-const baseConnection = {
+const baseConnection: Knex.MySql2ConnectionConfig = {
   host: env.DB_HOST,
   user: env.DB_USER,
   password: env.DB_PASSWORD || "",
   database: env.DB_NAME,
   timezone: "Z",
+  // ssl: env.DB_SSL ? { rejectUnauthorized: false } : undefined,
 };
 
 const config: Record<string, Knex.Config> = {

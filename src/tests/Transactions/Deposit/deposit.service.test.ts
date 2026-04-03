@@ -4,7 +4,7 @@ import { transactionService } from "@/modules/Transactions/transaction.service";
 import { walletService } from "@/modules/Wallet/wallet.service";
 import { ledgerService } from "@/modules/Ledger/ledger.service";
 import { APIError } from "@/utils/APIError";
-import db from "@/configs/db";
+import { testDB as db } from "@/configs/db";
 import { TransactionType, TransactionStatus } from "@/modules/Transactions/transaction.type";
 import { transactionRepository } from "@/modules/Transactions/transaction.repo";
 import { WalletType } from "@/modules/Wallet/wallet.type";

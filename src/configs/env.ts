@@ -15,6 +15,7 @@ const envSchema = z.object({
     DB_NAME: z.string(),
     JWT_SECRET: z.string(),
     ADJUTOR_API_KEY: z.string(),
+    DB_SSL: z.coerce.boolean(),
     ADJUTOR_BASE_URL: z
         .string()
         .default("https://adjutor.lendsqr.com/v2"),
