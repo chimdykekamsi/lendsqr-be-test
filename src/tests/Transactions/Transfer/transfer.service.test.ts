@@ -4,7 +4,7 @@ import { walletService } from "@/modules/Wallet/wallet.service";
 import { ledgerService } from "@/modules/Ledger/ledger.service";
 import { transferRepository } from "@/modules/Transactions/Transfer/transfer.repo";
 import { APIError } from "@/utils/APIError";
-import db from "@/configs/db";
+import { testDB as db } from "@/configs/db";
 import { Currency, CURRENCY_CONFIG, TransactionType, TransactionStatus } from "@/modules/Transactions/transaction.type";
 import { WalletType } from "@/modules/Wallet/wallet.type";
 
@@ -13,7 +13,6 @@ jest.mock("@/modules/Transactions/transaction.service");
 jest.mock("@/modules/Wallet/wallet.service");
 jest.mock("@/modules/Ledger/ledger.service");
 jest.mock("@/modules/Transactions/Transfer/transfer.repo");
-jest.mock("@/configs/db");
 
 describe("TransferService", () => {
     const mockSenderUserId = 1;
@@ -101,10 +100,7 @@ describe("TransferService", () => {
             };
             (transferRepository.findById as jest.Mock).mockResolvedValue(mockTransfer);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act
             const result = await transferService.initiateTransfer(
@@ -169,10 +165,7 @@ describe("TransferService", () => {
             // Mock walletService.findByUserIdRaw to return null for sender
             (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(null);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(
@@ -202,10 +195,7 @@ describe("TransferService", () => {
                 .mockResolvedValueOnce(mockSenderWallet) // sender wallet
                 .mockResolvedValueOnce(null); // receiver wallet not found
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(
@@ -254,10 +244,7 @@ describe("TransferService", () => {
             };
             (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockHoldingWallet);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(
@@ -299,10 +286,7 @@ describe("TransferService", () => {
             // Mock walletService.findSystemWallet to return null (holding wallet not found)
             (walletService.findSystemWallet as jest.Mock).mockResolvedValue(null);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(

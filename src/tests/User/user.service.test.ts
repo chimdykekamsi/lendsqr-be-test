@@ -3,13 +3,12 @@ import { userRepository } from "@/modules/User/user.repo";
 import { karmaService } from "@/modules/Karma/karma.service";
 import { walletService } from "@/modules/Wallet/wallet.service";
 import { APIError } from "@/utils/APIError";
-import db from "@/configs/db";
+import { testDB as db } from "@/configs/db";
 
 // Mock dependencies
 jest.mock("@/modules/User/user.repo");
 jest.mock("@/modules/Karma/karma.service");
 jest.mock("@/modules/Wallet/wallet.service");
-jest.mock("@/configs/db");
 
 describe("UserService", () => {
     const mockCreateUserDTO = {
@@ -47,10 +46,7 @@ describe("UserService", () => {
                 updated_at: new Date()
             });
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             const result = await userService.createUser(mockCreateUserDTO);
 
@@ -155,10 +151,7 @@ describe("UserService", () => {
                 updated_at: new Date()
             });
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             await userService.createUser(dtoWithoutPhone);
 
