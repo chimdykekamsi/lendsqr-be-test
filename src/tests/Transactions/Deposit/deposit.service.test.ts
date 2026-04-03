@@ -14,7 +14,6 @@ jest.mock("@/modules/Transactions/Deposit/deposit.repo");
 jest.mock("@/modules/Transactions/transaction.service");
 jest.mock("@/modules/Wallet/wallet.service");
 jest.mock("@/modules/Ledger/ledger.service");
-jest.mock("@/configs/db");
 
 describe("DepositService", () => {
     const mockUserId = 1;
@@ -50,10 +49,7 @@ describe("DepositService", () => {
             };
             (walletService.findByUserId as jest.Mock).mockResolvedValue(mockWallet);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act
             const result = await depositService.initiateDeposit(mockUserId, mockAmount, mockDescription);
@@ -98,10 +94,7 @@ describe("DepositService", () => {
             // Mock walletService.findByUserId to return null
             (walletService.findByUserId as jest.Mock).mockResolvedValue(null);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(
@@ -180,10 +173,7 @@ describe("DepositService", () => {
             };
             (depositRepository.findById as jest.Mock).mockResolvedValue(mockFunding);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act
             const result = await depositService.confirmDeposit(mockReference);
@@ -224,10 +214,7 @@ describe("DepositService", () => {
             // Mock transactionRepository.findByReference to return null
             (transactionRepository.findByReference as jest.Mock).mockResolvedValue(null);
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(
@@ -253,10 +240,7 @@ describe("DepositService", () => {
             };
             (transactionRepository.findByReference as jest.Mock).mockResolvedValue({ transaction: mockTransaction });
 
-            // Mock db.transaction to execute the callback directly
-            (db.transaction as jest.Mock).mockImplementation(async (callback) => {
-                return callback(db);
-            });
+
 
             // Act & Assert
             await expect(

@@ -15,7 +15,7 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "build": "npx tsc && npx tsc-alias",
+    "build": "npx tsc && npx tsc-alias && npm run migrate:latest",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/server.ts",
     "migrate:make": "node -r dotenv/config ./node_modules/knex/bin/cli.js  migrate:make  -x ts --knexfile src/knexfile.ts",
