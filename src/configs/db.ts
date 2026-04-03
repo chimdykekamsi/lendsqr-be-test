@@ -6,4 +6,5 @@ const environment = (env.NODE_ENV || "development") as keyof typeof knexConfig;
 
 const db: Knex = knex(knexConfig[environment]!);
 
+export const testDB = knex(knexConfig["test"]!);
 export default db;  
