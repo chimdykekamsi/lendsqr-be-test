@@ -59,10 +59,6 @@ The codebase is organised as **domain based modular monolythic** rather than fla
 
 ## Entity-Relationship Diagram
 
-```
-<iframe width="100%" height="500px" allowtransparency="true" allowfullscreen="true" scrolling="no" title="{{ $t('sharable_link.embedded_db_designer_iframe') }}" frameborder="0" src='https://erd.dbdesigner.net/designer/schema/1774726833-lendsqr-be-test?embed=true'></iframe>
-```
-
 > Full interactive diagram: [dbdesigner.net](https://dbdesigner.page.link/XfdTDJLWLwd5CvXg9)
 
 ---
