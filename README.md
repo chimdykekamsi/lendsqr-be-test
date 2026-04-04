@@ -11,7 +11,7 @@ A production-grade MVP wallet API built with **Node.js**, **TypeScript**, **Knex
 
 | | |
 |---|---|
-| **Live URL** | `https://chimdike-anagboso-lendsqr-be-test-production.up.railway.app/api/v1` |
+| **Live URL** | https://chimdike-anagboso-lendsqr-be-test-production.up.railway.app/api/v1 |
 | **GitHub** | https://github.com/chimdykekamsi/lendsqr-be-test |
 | **Postman Docs** | https://www.postman.com/ckamsi04/workspace/portfolio/collection/30476187-68d25d39-1c6c-48f4-b5a2-0822cb99f72f |
 
