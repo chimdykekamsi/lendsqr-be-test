@@ -1,254 +1,392 @@
-import { depositService } from "@/modules/Transactions/Deposit/deposit.service";
+import { DepositService } from "@/modules/Transactions/Deposit/deposit.service";
 import { depositRepository } from "@/modules/Transactions/Deposit/deposit.repo";
 import { transactionService } from "@/modules/Transactions/transaction.service";
+import { transactionRepository } from "@/modules/Transactions/transaction.repo";
 import { walletService } from "@/modules/Wallet/wallet.service";
 import { ledgerService } from "@/modules/Ledger/ledger.service";
-import { APIError } from "@/utils/APIError";
-import { testDB as db } from "@/configs/db";
-import { TransactionType, TransactionStatus } from "@/modules/Transactions/transaction.type";
-import { transactionRepository } from "@/modules/Transactions/transaction.repo";
+import { generateReference } from "@/utils/helpers";
+import { TransactionStatus, TransactionType } from "@/modules/Transactions/transaction.type";
 import { WalletType } from "@/modules/Wallet/wallet.type";
+import db from "@/configs/db";
 
-// Mock dependencies
-jest.mock("@/modules/Transactions/Deposit/deposit.repo");
-jest.mock("@/modules/Transactions/transaction.service");
-jest.mock("@/modules/Wallet/wallet.service");
-jest.mock("@/modules/Ledger/ledger.service");
+// ─── Mocks ────────────────────────────────────────────────────────────────────
+
+jest.mock("@/modules/Transactions/Deposit/deposit.repo", () => ({
+    depositRepository: {
+        create: jest.fn(),
+        findById: jest.fn(),
+        findByTransactionId: jest.fn(),
+    },
+}));
+
+jest.mock("@/modules/Transactions/transaction.service", () => ({
+    transactionService: {
+        createTransaction: jest.fn(),
+        updateTransactionStatus: jest.fn(),
+        sanitize: jest.fn((tx) => tx), // identity — keeps amount as-is in unit tests
+    },
+}));
+
+jest.mock("@/modules/Transactions/transaction.repo", () => ({
+    transactionRepository: {
+        findByReference: jest.fn(),
+    },
+}));
+
+jest.mock("@/modules/Wallet/wallet.service", () => ({
+    walletService: {
+        findByUserId: jest.fn(),
+        findByUserIdRaw: jest.fn(),
+        findSystemWallet: jest.fn(),
+        incrementBalance: jest.fn(),
+        decrementBalance: jest.fn(),
+    },
+}));
+
+jest.mock("@/modules/Ledger/ledger.service", () => ({
+    ledgerService: {
+        createDoubleEntry: jest.fn(),
+    },
+}));
+
+jest.mock("@/utils/helpers", () => ({
+    generateReference: jest.fn(),
+    hashObject: jest.fn(),
+    formatAmount: jest.fn((amount) => amount),
+    idempotentControllerWrapper: jest.fn((fn) => fn),
+}));
+
+jest.mock("@/configs/db", () => {
+    const mockDb = jest.fn();
+    (mockDb as any).transaction = jest.fn();
+    return { __esModule: true, default: mockDb };
+});
+
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+const mockTransaction = {
+    id: 1,
+    type: TransactionType.FUNDING,
+    status: TransactionStatus.PENDING,
+    amount: 1000000, // 10,000 NGN in kobo
+    reference: "DEP-TEST-00000001",
+    parent_transaction_id: null,
+    description: "Wallet funding",
+    user_id: 1,
+    created_at: new Date(),
+    updated_at: new Date(),
+};
+
+const mockUpdatedTransaction = {
+    ...mockTransaction,
+    status: TransactionStatus.SUCCESSFUL,
+};
+
+const mockUserWallet = {
+    id: 10,
+    user_id: 1,
+    wallet_type: WalletType.MAIN,
+    balance: 500000,
+    created_at: new Date(),
+    updated_at: new Date(),
+};
+
+const mockSystemWallet = {
+    id: 99,
+    user_id: null,
+    wallet_type: WalletType.SYSTEM,
+    balance: 10000000,
+    created_at: new Date(),
+    updated_at: new Date(),
+};
+
+const mockFunding = {
+    id: 1,
+    transaction_id: 1,
+    wallet_id: 10,
+    payment_reference: "DEP-TEST-00000001",
+    provider: "MockPay",
+    created_at: new Date(),
+};
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("DepositService", () => {
-    const mockUserId = 1;
-    const mockAmount = 1000; // 10 NGN in smallest currency unit
-    const mockDescription = "Test deposit";
+    let depositService: DepositService;
 
     beforeEach(() => {
         jest.clearAllMocks();
+        depositService = new DepositService();
+        (generateReference as jest.Mock).mockReturnValue("DEP-TEST-00000001");
     });
 
+    // ── initiateDeposit ────────────────────────────────────────────────────────
+
     describe("initiateDeposit", () => {
-        it("should initiate a deposit successfully", async () => {
-            // Mock transactionService.createTransaction
-            const mockTransaction = {
-                id: 1,
-                user_id: mockUserId,
-                amount: mockAmount,
-                reference: "DEP_123456",
-                status: TransactionStatus.PENDING,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
+        it("should create a PENDING transaction and return payment details on success", async () => {
             (transactionService.createTransaction as jest.Mock).mockResolvedValue(mockTransaction);
+            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockUserWallet);
 
-            // Mock walletService.findByUserId
-            const mockWallet = {
-                id: 1,
-                user_id: mockUserId,
-                wallet_type: "MAIN",
-                balance: 0,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
-            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockWallet);
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
 
+            const result = await depositService.initiateDeposit(1, 10000);
 
-
-            // Act
-            const result = await depositService.initiateDeposit(mockUserId, mockAmount, mockDescription);
-
-            // Assert
-            expect(result).toEqual({
-                transaction: expect.objectContaining(mockTransaction),
-                paymentDetails: {
-                    payment_reference: "DEP_123456",
-                    provider: "MockPay",
-                    paymentUrl: `https://mockpay.com/pay/DEP_123456`
-                }
+            expect(result.transaction).toEqual(mockTransaction);
+            expect(result.paymentDetails).toMatchObject({
+                payment_reference: "DEP-TEST-00000001",
+                provider: "MockPay",
+                paymentUrl: expect.stringContaining("DEP-TEST-00000001"),
             });
-
-            // Additional assertions
             expect(transactionService.createTransaction).toHaveBeenCalledWith(
                 expect.objectContaining({
                     type: TransactionType.FUNDING,
-                    user_id: mockUserId,
-                    amount: mockAmount,
-                    reference: expect.stringContaining("DEP"),
-                    description: mockDescription
+                    user_id: 1,
+                    amount: 1000000, // 10,000 * 100 multiplier
+                    reference: "DEP-TEST-00000001",
                 }),
-                db
+                trxMock
             );
-            expect(walletService.findByUserId).toHaveBeenCalledWith(mockUserId, db);
         });
 
-        it("should throw NotFound error when user wallet not found", async () => {
-            // Mock transactionService.createTransaction
-            const mockTransaction = {
-                id: 1,
-                user_id: mockUserId,
-                amount: mockAmount,
-                reference: "DEP_123456",
-                status: TransactionStatus.PENDING,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
+        it("should convert the amount to smallest currency unit before saving", async () => {
             (transactionService.createTransaction as jest.Mock).mockResolvedValue(mockTransaction);
+            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockUserWallet);
 
-            // Mock walletService.findByUserId to return null
-            (walletService.findByUserId as jest.Mock).mockResolvedValue(null);
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
 
+            await depositService.initiateDeposit(1, 10000); // 10,000 NGN
 
+            expect(transactionService.createTransaction).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    amount: 1000000, // 10,000 * 100 = 1,000,000 kobo
+                }),
+                trxMock
+            );
+        });
 
-            // Act & Assert
-            await expect(
-                depositService.initiateDeposit(mockUserId, mockAmount, mockDescription)
-            ).rejects.toThrow(APIError.NotFound("User wallet not found"));
+        it("should use a custom description when provided", async () => {
+            (transactionService.createTransaction as jest.Mock).mockResolvedValue(mockTransaction);
+            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockUserWallet);
 
-            // Assertions
-            expect(transactionService.createTransaction).toHaveBeenCalled();
-            expect(walletService.findByUserId).toHaveBeenCalledWith(mockUserId, db);
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await depositService.initiateDeposit(1, 5000, "Salary credit");
+
+            expect(transactionService.createTransaction).toHaveBeenCalledWith(
+                expect.objectContaining({ description: "Salary credit" }),
+                trxMock
+            );
+        });
+
+        it("should default description to 'Wallet funding' when none provided", async () => {
+            (transactionService.createTransaction as jest.Mock).mockResolvedValue(mockTransaction);
+            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockUserWallet);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await depositService.initiateDeposit(1, 5000);
+
+            expect(transactionService.createTransaction).toHaveBeenCalledWith(
+                expect.objectContaining({ description: "Wallet funding" }),
+                trxMock
+            );
+        });
+
+        it("should propagate error when walletService.findByUserId throws", async () => {
+            (transactionService.createTransaction as jest.Mock).mockResolvedValue(mockTransaction);
+            (walletService.findByUserId as jest.Mock).mockRejectedValue(
+                new Error("Wallet not found")
+            );
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(depositService.initiateDeposit(1, 10000))
+                .rejects.toThrow("Wallet not found");
         });
     });
 
+    // ── confirmDeposit ─────────────────────────────────────────────────────────
+
     describe("confirmDeposit", () => {
-        it("should confirm a deposit successfully", async () => {
-            const mockReference = "DEP_123456";
+        const reference = "DEP-TEST-00000001";
 
-            // Mock transactionRepository.findByReference
-            const mockTransaction = {
-                id: 1,
-                user_id: mockUserId,
-                amount: mockAmount,
-                reference: mockReference,
-                status: TransactionStatus.PENDING,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
-            (transactionRepository.findByReference as jest.Mock).mockResolvedValue({ transaction: mockTransaction });
+        it("should throw NotFound when transaction reference does not exist", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(undefined);
 
-            // Mock transactionService.updateTransactionStatus
-            const updatedTransaction = {
-                ...mockTransaction,
-                status: TransactionStatus.SUCCESSFUL
-            };
-            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(updatedTransaction);
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
 
-            // Mock walletService.findByUserIdRaw
-            const mockUserWallet = {
-                id: 1,
-                user_id: mockUserId,
-                wallet_type: "MAIN",
-                balance: 0,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
+            await expect(depositService.confirmDeposit(reference))
+                .rejects.toThrow("Transaction not found");
+
+            expect(transactionService.updateTransactionStatus).not.toHaveBeenCalled();
+        });
+
+        it("should throw Conflict when transaction is not in PENDING state", async () => {
+            const alreadySuccessful = { ...mockTransaction, status: TransactionStatus.SUCCESSFUL };
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(alreadySuccessful);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(depositService.confirmDeposit(reference))
+                .rejects.toThrow("Transaction is not in pending state");
+
+            expect(transactionService.updateTransactionStatus).not.toHaveBeenCalled();
+        });
+
+        it("should throw Internal when system wallet is not found", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
             (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
+            (walletService.findSystemWallet as jest.Mock).mockResolvedValue(null); // no system wallet
 
-            // Mock walletService.findSystemWallet
-            const mockSystemWallet = {
-                id: 2,
-                user_id: null,
-                wallet_type: "SYSTEM",
-                balance: 1000000,
-                created_at: new Date(),
-                updated_at: new Date()
-            };
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(depositService.confirmDeposit(reference))
+                .rejects.toThrow("System wallet not found");
+        });
+
+        it("should throw NotFound when user wallet is not found during confirmation", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            // walletService.findByUserIdRaw throws (as the service does) if wallet not found
+            (walletService.findByUserIdRaw as jest.Mock).mockRejectedValue(
+                new Error("Wallet not found")
+            );
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(depositService.confirmDeposit(reference))
+                .rejects.toThrow("Wallet not found");
+        });
+
+        it("should throw Internal when funding record cannot be created", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
             (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockSystemWallet);
-
-            // Mock walletService.incrementBalance and decrementBalance
             (walletService.incrementBalance as jest.Mock).mockResolvedValue(undefined);
             (walletService.decrementBalance as jest.Mock).mockResolvedValue(undefined);
-
-            // Mock ledgerService.createDoubleEntry
             (ledgerService.createDoubleEntry as jest.Mock).mockResolvedValue(undefined);
+            (depositRepository.create as jest.Mock).mockResolvedValue(null); // fails
 
-            // Mock depositRepository.create
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(depositService.confirmDeposit(reference))
+                .rejects.toThrow("Failed to create funding record");
+        });
+
+        it("should complete a deposit successfully", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
+            (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockSystemWallet);
+            (walletService.incrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (walletService.decrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (ledgerService.createDoubleEntry as jest.Mock).mockResolvedValue(undefined);
             (depositRepository.create as jest.Mock).mockResolvedValue(1);
-
-            // Mock depositRepository.findById
-            const mockFunding = {
-                id: 1,
-                transaction_id: 1,
-                wallet_id: 1,
-                payment_reference: mockReference,
-                provider: "MockPay",
-                created_at: new Date()
-            };
             (depositRepository.findById as jest.Mock).mockResolvedValue(mockFunding);
 
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
 
+            const result = await depositService.confirmDeposit(reference);
 
-            // Act
-            const result = await depositService.confirmDeposit(mockReference);
+            expect(result.transaction).toEqual(mockUpdatedTransaction);
+            expect(result.funding).toEqual(mockFunding);
+        });
 
-            // Assert
-            expect(result).toEqual({
-                transaction: expect.objectContaining(updatedTransaction),
-                funding: expect.objectContaining(mockFunding)
-            });
+        it("should update transaction to SUCCESSFUL during confirmation", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
+            (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockSystemWallet);
+            (walletService.incrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (walletService.decrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (ledgerService.createDoubleEntry as jest.Mock).mockResolvedValue(undefined);
+            (depositRepository.create as jest.Mock).mockResolvedValue(1);
+            (depositRepository.findById as jest.Mock).mockResolvedValue(mockFunding);
 
-            // Additional assertions
-            expect(transactionRepository.findByReference).toHaveBeenCalledWith(mockReference, db);
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await depositService.confirmDeposit(reference);
+
             expect(transactionService.updateTransactionStatus).toHaveBeenCalledWith(
-                1,
+                mockTransaction.id,
                 TransactionStatus.SUCCESSFUL,
-                db
+                trxMock
             );
-            expect(walletService.findByUserIdRaw).toHaveBeenCalledWith(mockUserId, db);
-            expect(walletService.findSystemWallet).toHaveBeenCalledWith(WalletType.SYSTEM, db);
-            expect(walletService.incrementBalance).toHaveBeenCalledWith(1, mockAmount, db);
-            expect(walletService.decrementBalance).toHaveBeenCalledWith(2, mockAmount, db);
-            expect(ledgerService.createDoubleEntry).toHaveBeenCalled();
-            expect(depositRepository.create).toHaveBeenCalledWith(
+        });
+
+        it("should credit user wallet and debit system wallet with correct amounts", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
+            (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockSystemWallet);
+            (walletService.incrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (walletService.decrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (ledgerService.createDoubleEntry as jest.Mock).mockResolvedValue(undefined);
+            (depositRepository.create as jest.Mock).mockResolvedValue(1);
+            (depositRepository.findById as jest.Mock).mockResolvedValue(mockFunding);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await depositService.confirmDeposit(reference);
+
+            expect(walletService.incrementBalance).toHaveBeenCalledWith(
+                mockUserWallet.id,
+                mockTransaction.amount,
+                trxMock
+            );
+            expect(walletService.decrementBalance).toHaveBeenCalledWith(
+                mockSystemWallet.id,
+                mockTransaction.amount,
+                trxMock
+            );
+        });
+
+        it("should create a double-entry ledger with correct credit and debit entries", async () => {
+            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(mockTransaction);
+            (transactionService.updateTransactionStatus as jest.Mock).mockResolvedValue(mockUpdatedTransaction);
+            (walletService.findByUserIdRaw as jest.Mock).mockResolvedValue(mockUserWallet);
+            (walletService.findSystemWallet as jest.Mock).mockResolvedValue(mockSystemWallet);
+            (walletService.incrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (walletService.decrementBalance as jest.Mock).mockResolvedValue(undefined);
+            (ledgerService.createDoubleEntry as jest.Mock).mockResolvedValue(undefined);
+            (depositRepository.create as jest.Mock).mockResolvedValue(1);
+            (depositRepository.findById as jest.Mock).mockResolvedValue(mockFunding);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await depositService.confirmDeposit(reference);
+
+            expect(ledgerService.createDoubleEntry).toHaveBeenCalledWith(
+                mockTransaction.id,
+                mockTransaction.amount,
                 expect.objectContaining({
-                    transaction_id: 1,
-                    wallet_id: 1,
-                    payment_reference: mockReference,
-                    provider: "MockPay"
+                    walletId: mockUserWallet.id,
+                    balanceBefore: mockUserWallet.balance,
+                    balanceAfter: mockUserWallet.balance + mockTransaction.amount,
                 }),
-                db
+                expect.objectContaining({
+                    walletId: mockSystemWallet.id,
+                    balanceBefore: mockSystemWallet.balance,
+                    balanceAfter: mockSystemWallet.balance - mockTransaction.amount,
+                }),
+                trxMock
             );
-            expect(depositRepository.findById).toHaveBeenCalledWith(1, db);
-        });
-
-        it("should throw NotFound error when transaction not found", async () => {
-            const mockReference = "DEP_123456";
-
-            // Mock transactionRepository.findByReference to return null
-            (transactionRepository.findByReference as jest.Mock).mockResolvedValue(null);
-
-
-
-            // Act & Assert
-            await expect(
-                depositService.confirmDeposit(mockReference)
-            ).rejects.toThrow(APIError.NotFound("Transaction not found"));
-
-            // Assertions
-            expect(transactionRepository.findByReference).toHaveBeenCalledWith(mockReference, db);
-        });
-
-        it("should throw Conflict error when transaction is not pending", async () => {
-            const mockReference = "DEP_123456";
-
-            // Mock transactionRepository.findByReference
-            const mockTransaction = {
-                id: 1,
-                user_id: mockUserId,
-                amount: mockAmount,
-                reference: mockReference,
-                status: TransactionStatus.SUCCESSFUL, // Already successful
-                created_at: new Date(),
-                updated_at: new Date()
-            };
-            (transactionRepository.findByReference as jest.Mock).mockResolvedValue({ transaction: mockTransaction });
-
-
-
-            // Act & Assert
-            await expect(
-                depositService.confirmDeposit(mockReference)
-            ).rejects.toThrow(APIError.Conflict("Transaction is not in pending state"));
-
-            // Assertions
-            expect(transactionRepository.findByReference).toHaveBeenCalledWith(mockReference, db);
         });
     });
 });

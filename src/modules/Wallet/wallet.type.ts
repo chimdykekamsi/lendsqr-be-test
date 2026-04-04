@@ -8,7 +8,7 @@ export enum WalletType {
 
 export interface WalletRow {
     id: number;
-    user_id: number;
+    user_id: number | null;
     wallet_type: WalletType;
     balance: number;
     created_at: Date;

@@ -4,6 +4,7 @@ import { JwtPayload } from "./auth.type";
 import db from "@/configs/db";
 import { APIError } from "@/utils/APIError";
 import { UserRow } from "../User/user.type";
+import { userRepository } from "../User/user.repo";
 
 export class AuthService {
   private readonly secret = env.JWT_SECRET;
@@ -34,7 +35,7 @@ export class AuthService {
    * In a real system this would validate credentials.
    */
   async login(email: string): Promise<{ token: string; user: UserRow }> {
-    const user = await db<UserRow>("users").where({ email }).first();
+    const user = await userRepository.findByEmail(email);
 
     if (!user) {
       throw APIError.NotFound("User not found");

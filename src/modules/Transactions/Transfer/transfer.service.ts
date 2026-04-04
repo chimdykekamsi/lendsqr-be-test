@@ -3,7 +3,7 @@ import { transactionService } from "../transaction.service";
 import { Currency, CURRENCY_CONFIG, TransactionType, TransactionRow, TransactionStatus } from "../transaction.type";
 import { generateReference } from "@/utils/helpers";
 import { walletService } from "../../Wallet/wallet.service";
-import { WalletType } from "../../Wallet/wallet.type";
+import { WalletRow, WalletType } from "../../Wallet/wallet.type";
 import { APIError } from "@/utils/APIError";
 import { ledgerService } from "../../Ledger/ledger.service";
 import { TransferRow, CreateTransferDTO } from "./transfer.type";
@@ -31,14 +31,19 @@ export class TransferService {
         }
 
         return db.transaction(async (trx) => {
+            // Lock User Wallets only (Sorted to prevent P2P deadlocks)
+            const userIds = [sender_user_id, receiver_user_id].sort((a, b) => a - b);
+            const lockedWallets = await trx<WalletRow>("wallets")
+                .whereIn("user_id", userIds)
+                .forUpdate();
+
             // Get sender's wallet
-            const senderWallet = await walletService.findByUserIdRaw(sender_user_id, trx, true);
+            const senderWallet = lockedWallets.find(w => w.user_id === sender_user_id);
             if (!senderWallet) {
                 throw APIError.NotFound("Sender wallet not found");
             }
 
-            // Get receiver's wallet
-            const receiverWallet = await walletService.findByUserIdRaw(receiver_user_id, trx);
+            const receiverWallet = lockedWallets.find(w => w.user_id === receiver_user_id);
             if (!receiverWallet) {
                 throw APIError.NotFound("Receiver wallet not found");
             }
@@ -53,6 +58,16 @@ export class TransferService {
             if (!holdingWallet) {
                 throw APIError.Internal("Holding wallet not found");
             }
+
+            // Get balances for ledger entries
+            const senderBalanceBefore = senderWallet.balance;
+            const receiverBalanceBefore = receiverWallet.balance;
+            const holdingBalanceBefore = holdingWallet.balance;
+
+            // Perform the transfer via holding wallet:
+            // 1. Debit sender's wallet, credit holding wallet (WITHDRAWAL leg)
+            await walletService.decrementBalance(senderWallet.id, transactionAmount, trx);
+            await walletService.incrementBalance(holdingWallet.id, transactionAmount, trx);
 
             // Create TRANSFER transaction for sender (money leaving sender's wallet)
             const withdrawalTransaction = await transactionService.createTransaction({
@@ -73,16 +88,6 @@ export class TransferService {
                 reference: generateReference("TRF-FD"),
                 description: description || `Transfer from user ${sender_user_id}`,
             }, trx);
-
-            // Get balances for ledger entries
-            const senderBalanceBefore = senderWallet.balance;
-            const receiverBalanceBefore = receiverWallet.balance;
-            const holdingBalanceBefore = holdingWallet.balance;
-
-            // Perform the transfer via holding wallet:
-            // 1. Debit sender's wallet, credit holding wallet (WITHDRAWAL leg)
-            await walletService.decrementBalance(senderWallet.id, transactionAmount, trx);
-            await walletService.incrementBalance(holdingWallet.id, transactionAmount, trx);
 
             // Create ledger entries for WITHDRAWAL transaction
             await ledgerService.createDoubleEntry(

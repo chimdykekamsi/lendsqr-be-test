@@ -1,763 +1,247 @@
-# Lendsqr Wallet Service Backend
+# Demo Credit — MVP Wallet Service
 
-A comprehensive wallet service backend built with Node.js, TypeScript, and Express that supports wallet creation, wallet-to-wallet transfers, deposits, withdrawals, and transaction management.
+**Candidate:** Chimdike Anagboso
+**Assessment:** Lendsqr Backend Engineering Assessment
+
+A production-grade MVP wallet API built with **Node.js**, **TypeScript**, **KnexJS ORM**, and **MySQL**. The service supports account creation with Lendsqr Adjutor Karma blacklist enforcement, wallet funding, peer-to-peer transfers, and withdrawals — all with full double-entry ledger bookkeeping and idempotency protection.
+
+---
+
+## Links
+
+| | |
+|---|---|
+| **Live URL** | `https://chimdike-anagboso-lendsqr-be-test-production.up.railway.app/api/v1` |
+| **GitHub** | https://github.com/chimdykekamsi/lendsqr-be-test |
+| **Postman Docs** | https://www.postman.com/ckamsi04/workspace/portfolio/collection/30476187-68d25d39-1c6c-48f4-b5a2-0822cb99f72f |
+
+---
 
 ## Table of Contents
-- [Project Overview](#project-overview)
-- [Setup Instructions](#setup-instructions)
-- [API Documentation](#api-documentation)
-- [Design Decisions and Architecture](#design-decisions-and-architecture)
-- [E-R Diagram](#er-diagram)
-- [Technology Stack](#technology-stack)
-- [Running Tests](#running-tests)
-- [Project Structure](#project-structure)
 
-## Project Overview
+- [Architecture Overview](#architecture-overview)
+- [Entity-Relationship Diagram](#entity-relationship-diagram)
+- [Design Decisions](#design-decisions)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [API Reference](#api-reference)
+- [Testing](#testing)
 
-This is a backend wallet service designed to provide secure and scalable financial transaction capabilities. The service includes:
+---
 
-- User authentication and management
-- Wallet creation and balance tracking
-- Deposit initialization and confirmation
-- Withdrawal processing
-- Wallet-to-wallet transfers
-- Transaction history and filtering
-- Idempotency protection for financial operations
-- Rate limiting for security
-- Comprehensive logging and error handling
+## Architecture Overview
 
-The system is built with TypeScript for type safety and follows RESTful API principles. It uses a relational database (MySQL) for data persistence and Redis for caching and idempotency key storage.
+```
+HTTP Request
+    │
+    ▼
+Global Middleware  (rate-limiter, cors, body-parser)
+    │
+    ▼
+Route Middleware   (auth → idempotency → validation)
+    │
+    ▼
+Controller         (HTTP in / HTTP out — thin layer only)
+    │
+    ▼
+Service            (all business logic, transaction scoping)
+    │
+    ▼
+Repository         (Knex queries — no raw SQL leaks upward)
+    │
+    ▼
+MySQL
+```
 
-## Setup Instructions
+The codebase is organised as **domain based modular monolythic** rather than flat technical layers. Each domain (`Auth`, `User`, `Wallet`, `Transactions/Deposit`, `Transactions/Withdrawal`, `Transactions/Transfer`, `Ledger`) owns its controller, service, and repository. This keeps related code co-located and makes each feature independently navigable.
+
+---
+
+## Entity-Relationship Diagram
+
+```
+<iframe width="100%" height="500px" allowtransparency="true" allowfullscreen="true" scrolling="no" title="{{ $t('sharable_link.embedded_db_designer_iframe') }}" frameborder="0" src='https://erd.dbdesigner.net/designer/schema/1774726833-lendsqr-be-test?embed=true'></iframe>
+```
+
+> Full interactive diagram: [dbdesigner.net](https://dbdesigner.page.link/XfdTDJLWLwd5CvXg9)
+
+---
+
+## Design Decisions
+
+### 1. System Wallet Architecture — MAIN, HOLDING, SYSTEM
+
+Rather than directly debiting one wallet and crediting another, the service uses **system-owned wallets** to model money-in-transit correctly throughout the withdrawal lifecycle.
+
+| Wallet Type | Owner | Purpose |
+|---|---|---|
+| `MAIN` | User | Spendable balance |
+| `HOLDING` | Platform | Escrow — holds funds while a withdrawal is pending bank settlement |
+| `SYSTEM` | Platform | Receives funds after a withdrawal is confirmed successful |
+| `FEE` | Platform | Reserved for fee collection (future use) |
+
+A withdrawal flows as:
+
+```
+User MAIN  ──(initiate)──►  HOLDING        (funds locked, not yet settled)
+HOLDING    ──(confirm ✓)──► SYSTEM         (money has left the platform)
+HOLDING    ──(confirm ✗)──► User MAIN      (reversal — funds returned)
+```
+
+`wallet.user_id` is **nullable** specifically to allow system-owned wallets that belong to the platform rather than any user. This was a conscious schema decision to support the holding wallet pattern without a separate table.
+
+### 2. Two-Step Transaction Flows (Initiate → Confirm)
+
+Deposits and withdrawals use a two-step flow rather than a single-step operation. This models real payment gateway behaviour — where you first create a payment order and then receive a webhook confirming success or failure. The `initiate` step returns a `PENDING` transaction and a mock payment URL. The `confirm` step finalises the transaction based on the gateway's result. This design makes the API realistic and extensible to real gateway integrations.
+
+### 3. Double-Entry Ledger
+
+Every balance mutation writes two `LedgerEntry` rows — one `CREDIT` and one `DEBIT` — each capturing `balance_before` and `balance_after`. This provides a complete, immutable audit trail where every kobo is accounted for and wallet balances can be independently verified against the ledger sum at any point in time.
+
+### 4. Amounts in Kobo (BigInt Only)
+
+All monetary values are stored and transmitted as **bigint in kobo** (smallest currency unit). This eliminates IEEE 754 floating-point rounding errors entirely. Conversion to naira is only done at the presentation layer.
+
+### 5. SELECT FOR UPDATE — Pessimistic Locking
+
+All balance-mutating operations acquire a row-level lock via `SELECT … FOR UPDATE` before reading the balance. This prevents race conditions where two concurrent requests read the same balance and both proceed against an insufficient balance. For transfers involving two wallets, locks are acquired in **ascending wallet ID order** to prevent deadlocks between opposing concurrent transfers.
+
+### 6. Idempotency Keys with Request Hashing
+
+Write endpoints require an `Idempotency-Key` header. The middleware stores a SHA-256 hash of the request body alongside the key. On retry:
+- **Key exists, hash matches** → return the cached response (safe replay)
+- **Key exists, hash differs** → return `409 Conflict` (prevents tampering — reusing a key with a different amount)
+- **Key not found** → process normally
+
+Currently, failed idempotency keys are deleted immediately. The better production approach would be **soft deletion** — marking them as `FAILED` and running a background job every 24 hours to purge them, or using Redis with native TTL. This was a deliberate trade-off given that Redis is outside the specified tech stack.
+
+### 7. Reversal Transactions
+
+When a withdrawal is confirmed as failed, a `REVERSAL` transaction is created and linked to the original via `parent_transaction_id`. This keeps the transaction history honest — both the failed withdrawal and the credit-back are visible to the user and to compliance tooling. The `REVERSAL` transaction type was added via a migration alter rather than being in the original schema to reflect how the requirement evolved.
+
+### 8. Differential Rate Limiting
+
+Transfer endpoints are rate-limited to **10 requests/hour**, stricter than the general **50 requests/minute** applied to other endpoints. This was a deliberate fraud mitigation choice — slowing down automated brute-force transfer attempts while keeping the registration and login flows responsive.
+
+### 9. What I Would Add With More Time
+
+**Transactional Outbox Pattern** — Post-registration side effects (wallet creation, welcome notifications) should be handled via an outbox table processed by a background worker. This improves response latency and guarantees eventual consistency even if the secondary operation fails. It would require Redis, which is outside the specified stack, so the wallet is currently created synchronously in the registration transaction.
+
+**OTP-Based Login** — Email-only faux login would be replaced with a time-limited OTP delivered to the user's phone or email. This is both more secure and eliminates the need for password storage. DB-session token management would also replace stateless JWT for easier token revocation.
+
+**Soft Delete on Idempotency Keys** — As described above, marking failed keys rather than deleting them provides a better audit trail and prevents replay edge cases during the deletion window.
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Reason |
+|---|---|---|
+| Runtime | Node.js LTS (v20) | Required; optimal for I/O-heavy financial APIs |
+| Language | TypeScript 5 | Type safety eliminates runtime bugs in financial logic |
+| Framework | Express 5 | Minimal, production-proven |
+| ORM | KnexJS 3 | Required; composable query builder with migration support |
+| Database | MySQL 8 (InnoDB) | Required; InnoDB supports `SELECT FOR UPDATE` row-level locking |
+| Validation | Zod | Runtime schema enforcement with full TypeScript inference |
+| Auth | JWT (jsonwebtoken) | Stateless tokens; sufficient for faux auth requirement |
+| Logging | Winston | Structured logging with configurable log levels |
+| Rate Limiting | express-rate-limit | Per-endpoint throttling for fraud mitigation |
+| Testing | Jest + ts-jest | Required; full mock support for service-layer unit tests |
+| HTTP Client | Axios | Lendsqr Adjutor Karma API integration |
+| Deployment | Railway | Free tier with MySQL; auto-deploys on push to main |
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- Node.js (v18+ recommended)
-- MySQL database
-- Redis server
-- npm package manager
+
+- Node.js ≥ 18 (LTS)
+- MySQL 8+
 
 ### Installation
 
-1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/chimdykekamsi/lendsqr-be-test.git
 cd lendsqr-be-test
-```
-
-2. Install dependencies:
-```bash
 npm install
+cp .env.example .env
+# Fill in your DB credentials and Adjutor API key
 ```
-
-3. Environment Setup:
-   - Copy `.env.example` to `.env`
-   - Update the environment variables with your configuration:
-     ```env
-     DB_HOST="localhost"
-     DB_USER="root"
-     DB_PASSWORD="your_password"
-     DB_NAME="lendsqr_test_db"
-     DB_PORT=3306
-     
-     PORT=4000
-     
-     JWT_SECRET="your_jwt_secret_here"
-     
-     REDIS_URL="redis://localhost:6379"
-     REDIS_HOST="localhost"
-     REDIS_PORT="6379"
-     REDIS_PASSWORD=""
-     
-     ADJUTOR_BASE_URL="https://adjutor.lendsqr.com/v2/"
-     ADJUTOR_API_KEY="your_adjutor_api_key"
-     ADJUTOR_APP_ID="your_adjutor_app_id"
-     ```
-
-4. Database Setup:
-   - Create the database specified in your `.env` file
-   - Run migrations:
-     ```bash
-     npm run migrate:latest
-     ```
-   - Run seeds (optional, for initial data):
-     ```bash
-     npm run seed
-     ```
-
-5. Start the development server:
-   ```bash
-   npm run dev
-   ```
-   
-   For production:
-   ```bash
-   npm run build
-   npm start
-   ```
 
 ### Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| DB_HOST | Database host | Yes |
-| DB_USER | Database username | Yes |
-| DB_PASSWORD | Database password | Yes |
-| DB_NAME | Database name | Yes |
-| DB_PORT | Database port | Yes |
-| PORT | Server port | No (defaults to 4000) |
-| JWT_SECRET | Secret for JWT token signing | Yes |
-| ADJUTOR_BASE_URL | Base URL for Adjutor API | Yes |
-| ADJUTOR_API_KEY | API key for Adjutor service | Yes |
-| ADJUTOR_APP_ID | Application ID for Adjutor service | Yes |
+```env
+NODE_ENV=development
+PORT=3000
 
-## API Documentation
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_password
+DB_NAME=demo_credit
 
-### Base URL
+JWT_SECRET=your_super_secret_jwt_key
+ADJUTOR_API_KEY=your_adjutor_api_key
+ADJUTOR_BASE_URL=https://adjutor.lendsqr.com/v2
 ```
-dev: http://localhost:4000/api/v1
+
+### Running
+
+```bash
+npm run migrate:latest   # run all migrations
+npm run seed             # optional: seed demo data
+npm run dev              # development with hot reload
+npm run build && npm start  # production
 ```
+
+---
+
+## API Reference
+
+> **Base URL:** `https://chimdike-anagboso-lendsqr-be-test-production.up.railway.app/api/v1`
+> All amounts are in **kobo** — ₦1.00 = 100 kobo.
+> Full documentation with example responses: [Postman Collection](https://www.postman.com/ckamsi04/workspace/portfolio/collection/30476187-68d25d39-1c6c-48f4-b5a2-0822cb99f72f)
 
 ### Authentication
-Most endpoints require JWT authentication. Include the token in the Authorization header:
-```
-Authorization: Bearer <your_jwt_token>
-```
+All protected routes require: `Authorization: Bearer <token>`
 
-### Auth Endpoints
+### Endpoints
 
-#### Register User
-- **URL**: `/auth/register`
-- **Method**: `POST`
-- **Access**: Public (rate limited)
-- **Request Body**:
-  ```json
-  {
-    "email": "user@example.com",
-    "name": "John Doe",
-    "phone": "+1234567890"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "User created successfully",
-    "data": {
-      "user": {
-        "id": 1,
-        "email": "user@example.com",
-        "name": "John Doe",
-        "phone": "+1234567890",
-        "created_at": "2026-04-01T16:53:24.000Z",
-        "updated_at": "2026-04-01T16:53:24.000Z"
-      },
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-    }
-  }
-  ```
+| Method | Path | Description | Auth | Idempotency |
+|---|---|---|---|---|
+| `POST` | `/auth/register` | Register user (Karma check) | Public | — |
+| `POST` | `/auth/login` | Passwordless login → JWT | Public | — |
+| `GET` | `/users/me` | Get profile | 🔒 | — |
+| `POST` | `/transactions/deposits/initiate` | Create pending deposit | 🔒 | Required |
+| `POST` | `/transactions/deposits/confirm` | Confirm deposit by reference | 🔒 | — |
+| `POST` | `/transactions/withdrawals/initiate` | Create pending withdrawal | 🔒 | Required |
+| `POST` | `/transactions/withdrawals/confirm` | Confirm or cancel withdrawal | 🔒 | — |
+| `POST` | `/transactions/transfers/` | Atomic wallet-to-wallet transfer | 🔒 | Required |
+| `GET` | `/transactions` | Paginated transaction history | 🔒 | — |
+| `GET` | `/transactions/:id` | Get transaction by ID | 🔒 | — |
 
-#### Login
-- **URL**: `/auth/login`
-- **Method**: `POST`
-- **Access**: Public (rate limited)
-- **Request Body**:
-  ```json
-  {
-    "email": "user@example.com"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Login successful",
-    "data": {
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-    }
-  }
-  ```
+### Transaction Reference Prefixes
 
-### User Endpoints
+| Prefix | Type |
+|---|---|
+| `DEP-` | Deposit |
+| `WD-` | Withdrawal |
+| `TRF-` | Transfer |
+| `REV-` | Reversal |
 
-#### Get Profile
-- **URL**: `/users/me`
-- **Method**: `GET`
-- **Access**: Private (requires authentication)
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Profile retrieved",
-    "data": {
-      "id": 1,
-      "email": "user@example.com",
-      "name": "John Doe",
-      "phone": "+1234567890",
-      "wallet": {
-        "id": 1,
-        "user_id": 1,
-        "wallet_type": "MAIN",
-        "balance": 0,
-        "currency": "NGN",
-        "created_at": "2026-04-01T16:53:24.000Z",
-        "updated_at": "2026-04-01T16:53:24.000Z"
-      }
-    }
-  }
-  ```
+---
 
-### Wallet Endpoints
+## Testing
 
-#### Get Wallet Balance
-- **URL**: `/wallet/balance`
-- **Method**: `GET`
-- **Access**: Private (requires authentication)
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Wallet balance retrieved successfully",
-    "data": {
-      "balance": 0,
-      "currency": "NGN"
-    }
-  }
-  ```
-
-### Transaction Endpoints
-
-#### Get Transactions (with filtering and pagination)
-- **URL**: `/transactions`
-- **Method**: `GET`
-- **Access**: Private (requires authentication)
-- **Query Parameters**:
-  - `transaction_type`: FUNDING, TRANSFER, WITHDRAWAL, REFUND
-  - `status`: PENDING, SUCCESSFUL, FAILED
-  - `amount_min`: Minimum amount (in NGN)
-  - `amount_max`: Maximum amount (in NGN)
-  - `date_from`: Start date (ISO format)
-  - `date_to`: End date (ISO format)
-  - `limit`: Number of records to return (1-100, default 10)
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Transactions retrieved successfully",
-    "data": {
-      "transactions": [
-        {
-          "id": 1,
-          "type": "FUNDING",
-          "status": "SUCCESSFUL",
-          "amount": 100000,
-          "reference": "txn_123456789",
-          "description": "Initial deposit",
-          "created_at": "2026-04-01T16:53:24.000Z",
-          "updated_at": "2026-04-01T16:53:24.000Z"
-        }
-      ],
-      "pagination": {
-        "total": 1,
-        "limit": 10,
-        "offset": 0
-      }
-    }
-  }
-  ```
-
-#### Get Transaction by ID
-- **URL**: `/transactions/:id`
-- **Method**: `GET`
-- **Access**: Private (requires authentication)
-- **URL Parameters**:
-  - `id`: Transaction ID
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Transaction details retrieved successfully",
-    "data": {
-      "id": 1,
-      "type": "FUNDING",
-      "status": "SUCCESSFUL",
-      "amount": 100000,
-      "reference": "txn_123456789",
-      "description": "Initial deposit",
-      "created_at": "2026-04-01T16:53:24.000Z",
-      "updated_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-### Deposit Endpoints
-
-#### Initialize Deposit
-- **URL**: `/transactions/deposits/initiate`
-- **Method**: `POST`
-- **Access**: Private (requires authentication, rate limited)
-- **Request Body**:
-  ```json
-  {
-    "amount": 1000.00,
-    "currency": "NGN",
-    "metadata": {
-      "bank_name": "Test Bank",
-      "account_number": "1234567890"
-    }
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Deposit initialized successfully",
-    "data": {
-      "reference": "dep_123456789",
-      "amount": 1000.00,
-      "currency": "NGN",
-      "status": "PENDING",
-      "created_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-#### Confirm Deposit
-- **URL**: `/transactions/deposits/confirm`
-- **Method**: `POST`
-- **Access**: Private (requires authentication)
-- **Request Body**:
-  ```json
-  {
-    "reference": "dep_123456789",
-    "status": "SUCCESSFUL"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Deposit confirmed successfully",
-    "data": {
-      "reference": "dep_123456789",
-      "amount": 1000.00,
-      "currency": "NGN",
-      "status": "SUCCESSFUL",
-      "created_at": "2026-04-01T16:53:24.000Z",
-      "updated_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-### Transfer Endpoints
-
-#### Initiate Transfer
-- **URL**: `/transactions/transfers`
-- **Method**: `POST`
-- **Access**: Private (requires authentication, rate limited)
-- **Request Body**:
-  ```json
-  {
-    "amount": 500.00,
-    "currency": "NGN",
-    "reference": "unique_idempotency_key",
-    "metadata": {
-      "description": "Transfer to friend"
-    }
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Transfer initiated successfully",
-    "data": {
-      "reference": "txn_987654321",
-      "amount": 500.00,
-      "currency": "NGN",
-      "status": "PENDING",
-      "created_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-### Withdrawal Endpoints
-
-#### Initiate Withdrawal
-- **URL**: `/transactions/withdrawals/initiate`
-- **Method**: `POST`
-- **Access**: Private (requires authentication, rate limited)
-- **Request Body**:
-  ```json
-  {
-    "amount": 500.00,
-    "currency": "NGN",
-    "reference": "unique_idempotency_key",
-    "metadata": {
-      "bank_name": "Test Bank",
-      "account_number": "1234567890"
-    }
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Withdrawal initiated successfully",
-    "data": {
-      "reference": "txn_111222333",
-      "amount": 500.00,
-      "currency": "NGN",
-      "status": "PENDING",
-      "created_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-#### Confirm Withdrawal
-- **URL**: `/transactions/withdrawals/confirm`
-- **Method**: `POST`
-- **Access**: Private (requires authentication)
-- **Request Body**:
-  ```json
-  {
-    "reference": "txn_111222333",
-    "status": "SUCCESSFUL"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "status": "success",
-    "message": "Withdrawal confirmed successfully",
-    "data": {
-      "reference": "txn_111222333",
-      "amount": 500.00,
-      "currency": "NGN",
-      "status": "SUCCESSFUL",
-      "created_at": "2026-04-01T16:53:24.000Z",
-      "updated_at": "2026-04-01T16:53:24.000Z"
-    }
-  }
-  ```
-
-### Response Format
-
-All API responses follow a standardized format:
-
-#### Success Response
-```json
-{
-  "status": "success",
-  "message": "Description of what happened",
-  "data": {}
-}
-```
-
-#### Error Response
-```json
-{
-  "status": "error",
-  "message": "Error description",
-  "error": {
-    "code": "ERROR_CODE",
-    "details": {}
-  }
-}
-```
-
-HTTP Status Codes:
-- 200: Success
-- 201: Created
-- 400: Bad Request
-- 401: Unauthorized
-- 403: Forbidden
-- 429: Too Many Requests
-- 500: Internal Server Error
-
-## Design Decisions and Architecture
-
-### Architectural Overview
-
-The application follows a modular, layered architecture:
-
-```
-src/
-├── configs/          # Configuration files (database, environment, routes)
-├── database/         # Database migrations and seeds
-├── middlewares/      # Custom Express middlewares
-├── modules/          # Feature-based modules
-│   ├── Auth/         # Authentication module
-│   ├── User/         # User management
-│   ├── Wallet/       # Wallet management
-│   ├── Transactions/ # Transaction processing
-│   │   ├── Deposit/  # Deposit-specific logic
-│   │   ├── Transfer/ # Transfer-specific logic
-│   │   └── Withdrawal/ # Withdrawal-specific logic
-│   ├── Idempotency/  # Idempotency protection
-│   ├── Ledger/       # Ledger entries for accounting
-│   └── Karma/        # Additional service (if applicable)
-├── types/            # TypeScript type definitions
-└── utils/            # Utility functions and helpers
-```
-
-### Key Design Decisions
-
-1. **Modular Structure**: Organized by feature rather than by technical layer, making it easier to locate and manage related code.
-
-2. **Database Design**:
-   - Balance stored in smallest currency unit (kobo for NGN) to avoid floating-point precision issues
-   - Separate tables for users, wallets, transactions, ledger entries, and idempotency keys
-   - Proper indexing on frequently queried columns
-   - Foreign key constraints with appropriate cascade behaviors
-
-3. **Idempotency Protection**:
-   - Implemented for all financial operations (deposits, withdrawals, transfers)
-   - Prevents duplicate processing of the same request
-   - request hash prevents different request body using the same key
-
-4. **Security Measures**:
-   - JWT-based authentication
-   - Rate limiting on sensitive endpoints
-   - Input validation using Zod schema
-   - Password hashing (though not implemented in this version as it's a faux login)
-   - Environment-based configuration
-
-5. **Error Handling**:
-   - Centralized error handling middleware
-   - Custom APIError class for consistent error responses
-   - Detailed error logging
-
-6. **Transaction Management**:
-   - Atomic operations using database transactions where appropriate
-   - Ledger entries for audit trail
-   - Support for transaction reversals and refunds
-
-7. **External Service Integration**:
-   - Designed to integrate with Adjutor service for payment processing
-   - Abstracted service layer for easy replacement/mocking
-
-### Data Flow
-
-1. **User Registration/Login**:
-   - Request → Auth Controller → Auth Service → User Service → Database
-   - On successful login, JWT token is generated and returned
-
-2. **Financial Operations (Deposit/Withdrawal/Transfer)**:
-   - Request → Transaction Controller → Transaction Service → Validation → Idempotency Check → Database Operations → Ledger Entry Creation → Response
-
-3. **Balance Inquiry**:
-   - Request → Wallet Controller → Wallet Service → Database Query → Response
-
-## E-R Diagram
-
-![Entity Relationship Diagram](https://via.placeholder.com/800x600.png?text=E-R+Diagram+Placeholder)
-
-
-### Entities and Relationships
-
-- **Users**: One-to-One with Wallets (each user has one main wallet)
-- **Wallets**: One-to-Many with Ledger Entries (each wallet can have multiple ledger entries)
-- **Transactions**: One-to-Many with Ledger Entries (each transaction affects multiple wallets via ledger entries)
-- **Ledger Entries**: Many-to-One with Wallets and Transactions (each entry belongs to one wallet and one transaction)
-- **Idempotency Keys**: Many-to-One with Users (each user can have multiple idempotency keys)
-- **Transaction Details**: One-to-One with Transactions (additional details for specific transaction types)
-
-## Technology Stack
-
-### Runtime & Framework
-- **Node.js**: JavaScript runtime
-- **Express.js**: Web framework for Node.js
-- **TypeScript**: Typed superset of JavaScript
-
-### Database & ORM
-- **MySQL**: Relational database management system
-- **Knex.js**: SQL query builder for Node.js
-
-### Authentication & Security
-- **JSON Web Tokens (JWT)**: For authentication
-- **bcryptjs**: Password hashing (available but not used in faux login)
-- **express-rate-limit**: Rate limiting middleware
-- **cors**: Cross-Origin Resource Sharing middleware
-
-### Validation & Type Safety
-- **Zod**: TypeScript-first schema validation
-- **TypeScript**: Static type checking
-
-### Testing
-- **Jest**: JavaScript testing framework
-- **ts-jest**: TypeScript preprocessor for Jest
-
-### Logging
-- **Winston**: Logging library
-
-### Utilities
-- **UUID**: Unique identifier generation
-- **axios**: HTTP client for external service requests
-- **dotenv**: Environment variable loading
-- **tsconfig-paths**: TypeScript path resolution
-- **tsc-alias**: Path alias support for compiled JavaScript
-
-### Development Tools
-- **ts-node-dev**: Development server with auto-reload
-- **ESLint**: JavaScript/TypeScript linting
-- **Prettier**: Code formatting (configuration implied)
-
-## Running Tests
-
-### Test Setup
-Ensure you have a test database configured (can be same as development but recommended to use separate).
-
-### Running All Tests
 ```bash
-npm run test
+npm test                 # run all unit tests
+npm run test:coverage    # with coverage report
 ```
 
-### Running Tests with Coverage
-```bash
-npm run test:coverage
-```
-
-### Test File Structure
-Tests are located in the `src/tests/` directory:
-- `helpers.test.ts`: Utility function tests
-- `Karma.service.test.ts`: Service-specific tests
-
-### Writing Tests
-Follow the existing test patterns:
-- Use `describe` blocks to group related tests
-- Use `it` blocks for individual test cases
-- Mock external dependencies when necessary
-- Clean up test data after each test when appropriate
-
-## Project Structure
-
-```
-lendsqr-be-test/
-├── src/                    # Source code
-│   ├── app.ts              # Express app configuration
-│   ├── server.ts           # Server entry point
-│   ├── knexfile.ts         # Knex configuration
-│   │
-│   ├── configs/            # Configuration files
-│   │   ├── db.ts           # Database configuration
-│   │   ├── env.ts          # Environment variable validation
-│   │   └── routes.ts       # API route definitions
-│   │
-│   ├── database/           # Database files
-│   │   ├── migrations/     # Database migration files
-│   │   └── seeds/          # Database seed files
-│   │
-│   ├── middlewares/        # Custom Express middlewares
-│   │   ├── errorHandler.ts # Centralized error handling
-│   │   ├── rateLimiter.ts  # Rate limiting middleware
-│   │   ├── responseTimer.ts # Response timing middleware
-│   │   └── validation.middleware.ts # Request validation
-│   │
-│   ├── modules/            # Feature modules
-│   │   ├── Auth/           # Authentication module
-│   │   │   ├── auth.controller.ts
-│   │   │   ├── auth.routes.ts
-│   │   │   ├── auth.service.ts
-│   │   │   └── auth.type.ts
-│   │   │
-│   │   ├── User/           # User management
-│   │   │   ├── user.controller.ts
-│   │   │   ├── user.routes.ts
-│   │   │   ├── user.service.ts
-│   │   │   └── user.type.ts
-│   │   │
-│   │   ├── Wallet/         # Wallet management
-│   │   │   ├── wallet.controller.ts
-│   │   │   ├── wallet.routes.ts
-│   │   │   ├── wallet.service.ts
-│   │   │   └── wallet.type.ts
-│   │   │
-│   │   ├── Transactions/   # Transaction processing
-│   │   │   ├── transaction.controller.ts
-│   │   │   ├── transaction.routes.ts
-│   │   │   ├── transaction.service.ts
-│   │   │   └── transaction.type.ts
-│   │   │   │
-│   │   │   ├── Deposit/    # Deposit-specific
-│   │   │   │   ├── deposit.controller.ts
-│   │   │   │   ├── deposit.routes.ts
-│   │   │   │   ├── deposit.service.ts
-│   │   │   │   └── deposit.type.ts
-│   │   │   │
-│   │   │   ├── Transfer/   # Transfer-specific
-│   │   │   │   ├── transfer.controller.ts
-│   │   │   │   ├── transfer.routes.ts
-│   │   │   │   ├── transfer.service.ts
-│   │   │   │   └── transfer.type.ts
-│   │   │   │
-│   │   │   └── Withdrawal/ # Withdrawal-specific
-│   │   │       ├── withdrawal.controller.ts
-│   │   │       ├── withdrawal.routes.ts
-│   │   │       ├── withdrawal.service.ts
-│   │   │       └── withdrawal.type.ts
-│   │   │
-│   │   ├── Idempotency/    # Idempotency protection
-│   │   │   ├── idempotency.middleware.ts
-│   │   │   ├── idempotency.service.ts
-│   │   │   └── idempotency.type.ts
-│   │   │
-│   │   ├── Ledger/         # Ledger entries
-│   │   │   ├── ledger.repo.ts
-│   │   │   ├── ledger.service.ts
-│   │   │   └── ledger.type.ts
-│   │   │
-│   │   └── Karma/          # Additional service
-│   │       ├── karma.service.ts
-│   │       └── karma.type.ts
-│   │
-│   ├── types/              # TypeScript type definitions
-│   │   └── express.d.ts    # Express type extensions
-│   │
-│   └── utils/              # Utility functions
-│       ├── APIError.ts     # Custom error class
-│       ├── APIResponse.ts  # Standardized response helper
-│       ├── helpers.ts      # Utility functions
-│       └── logger.ts       # Logging configuration
-│
-├── tests/                  # Test files
-│   ├── helpers.test.ts
-│   └── Karma.service.test.ts
-|   |__ 
-│
-├── .env.example            # Environment variables template
-├── .gitignore              # Git ignore rules
-├── package.json            # Project dependencies and scripts
-├── package-lock.json       # Dependency lock file
-├── README.md               # This file
-└── tsconfig.json           # TypeScript configuration
-```
-
-### Key Directories Explained
-
-- **src/modules**: Contains feature-based modules, each with its own controller, routes, service, and type files
-- **src/database/migrations**: Contains SQL migration files for database schema evolution
-- **src/database/seeds**: Contains seed data for initial database population
-- **src/middlewares**: Contains custom Express middleware functions
-- **src/utils**: Contains utility classes and helper functions used across the application
-- **src/types**: Contains TypeScript type definitions and extensions
-
-### Naming Conventions
-- **Controllers**: Handle HTTP requests and responses
-- **Services**: Contain business logic
-- **Routes**: Define API endpoints and connect them to controllers
-- **Types**: Define TypeScript interfaces and types
-- **Middleware**: Functions that execute during the request-response cycle
-- **Repositories**: Handle data access patterns (used in some modules)
-
-## License
-
-This project is licensed under the ISC License 
-
-## Author
-
-Chimdike Anagboso
-
-## Acknowledgments
-
-- Built as part of the Lendsqr backend engineering assessment
-- Uses various open-source libraries and frameworks
+Test coverage spans positive and negative scenarios for:
+- `KarmaService` — blacklisted identity, 404 (not blacklisted), network timeout (fail-open)
+- `UserService` — duplicate email, blacklisted email, blacklisted phone, successful creation
+- `WalletService` — funding, transfer (self-transfer, insufficient funds, receiver not found), withdrawal
+- `WithdrawalService` — initiate (wallet not found, insufficient balance, holding wallet missing), confirm success, confirm failure with reversal, transaction not found, conflict on non-pending transaction, system wallet missing
+- `Helpers` — reference generation, SHA-256 hashing, amount validation, kobo-to-naira formatting

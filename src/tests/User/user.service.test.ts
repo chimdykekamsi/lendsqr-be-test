@@ -1,224 +1,218 @@
-import { userService } from "@/modules/User/user.service";
+import { UserService } from "@/modules/User/user.service";
 import { userRepository } from "@/modules/User/user.repo";
 import { karmaService } from "@/modules/Karma/karma.service";
 import { walletService } from "@/modules/Wallet/wallet.service";
-import { APIError } from "@/utils/APIError";
-import { testDB as db } from "@/configs/db";
+import { WalletType } from "@/modules/Wallet/wallet.type";
+import db from "@/configs/db";
 
-// Mock dependencies
-jest.mock("@/modules/User/user.repo");
-jest.mock("@/modules/Karma/karma.service");
-jest.mock("@/modules/Wallet/wallet.service");
+// ─── Mocks ────────────────────────────────────────────────────────────────────
+
+jest.mock("@/modules/User/user.repo", () => ({
+    userRepository: {
+        findByEmail: jest.fn(),
+        findById: jest.fn(),
+        create: jest.fn(),
+    },
+}));
+
+jest.mock("@/modules/Karma/karma.service", () => ({
+    karmaService: {
+        isBlacklisted: jest.fn(),
+    },
+}));
+
+jest.mock("@/modules/Wallet/wallet.service", () => ({
+    walletService: {
+        createWallet: jest.fn(),
+        findByUserId: jest.fn(),
+        findByUserIdRaw: jest.fn(),
+    },
+}));
+
+jest.mock("@/configs/db", () => {
+    const mockDb = jest.fn();
+    (mockDb as any).transaction = jest.fn();
+    return { __esModule: true, default: mockDb };
+});
+
+// ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+const mockUser = {
+    id: 1,
+    name: "Chimdike Anagboso",
+    email: "chimdike@example.com",
+    phone: "+2348012345678",
+    created_at: new Date(),
+    updated_at: new Date(),
+};
+
+const mockWallet = {
+    id: 1,
+    user_id: 1,
+    wallet_type: WalletType.MAIN,
+    balance: 0,
+    created_at: new Date(),
+    updated_at: new Date(),
+};
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("UserService", () => {
-    const mockCreateUserDTO = {
-        name: "John Doe",
-        email: "john@example.com",
-        phone: "1234567890"
-    };
+    let userService: UserService;
 
     beforeEach(() => {
         jest.clearAllMocks();
+        userService = new UserService();
     });
 
+    // ── createUser ─────────────────────────────────────────────────────────────
+
     describe("createUser", () => {
-        it("should create a user successfully when email doesn't exist and not blacklisted", async () => {
-            // Mock repository.findByEmail to return null (no existing user)
-            (userRepository.findByEmail as jest.Mock).mockResolvedValue(null);
+        const dto = {
+            name: "Chimdike Anagboso",
+            email: "chimdike@example.com",
+            phone: "+2348012345678",
+        };
 
-            // Mock karmaService.isBlacklisted to return false for both email and phone
-            (karmaService.isBlacklisted as jest.Mock).mockResolvedValue(false);
+        it("should throw Conflict when email already exists", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(mockUser);
 
-            // Mock repository.create to return a userId
-            (userRepository.create as jest.Mock).mockResolvedValue(1);
+            await expect(userService.createUser(dto))
+                .rejects.toThrow("A user with this email already exists");
 
-            // Mock walletService.createWallet to resolve
-            (walletService.createWallet as jest.Mock).mockResolvedValue({ id: 1, user_id: 1, wallet_type: "MAIN", balance: 0 });
-
-            // Mock repository.findById to return the created user
-            (userRepository.findById as jest.Mock).mockResolvedValue({
-                id: 1,
-                name: "John Doe",
-                email: "john@example.com",
-                phone: "1234567890",
-                blacklisted: false,
-                created_at: new Date(),
-                updated_at: new Date()
-            });
-
-
-
-            const result = await userService.createUser(mockCreateUserDTO);
-
-            expect(result).toEqual({
-                id: 1,
-                name: "John Doe",
-                email: "john@example.com",
-                phone: "1234567890",
-                blacklisted: false,
-                created_at: expect.any(Date),
-                updated_at: expect.any(Date)
-            });
-
-            expect(userRepository.findByEmail).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("1234567890");
-            expect(userRepository.create).toHaveBeenCalledWith({
-                name: "John Doe",
-                email: "john@example.com",
-                phone: "1234567890"
-            }, db);
-            expect(walletService.createWallet).toHaveBeenCalledWith(1, "MAIN", db);
-            expect(userRepository.findById).toHaveBeenCalledWith(1, db);
+            expect(userRepository.findByEmail).toHaveBeenCalledWith(dto.email);
+            // Must not proceed to karma check
+            expect(karmaService.isBlacklisted).not.toHaveBeenCalled();
         });
 
-        it("should throw Conflict error when email already exists", async () => {
-            // Mock repository.findByEmail to return an existing user
-            (userRepository.findByEmail as jest.Mock).mockResolvedValue({
-                id: 1,
-                email: "john@example.com"
-            });
-
-            await expect(userService.createUser(mockCreateUserDTO))
-                .rejects
-                .toThrow(APIError.Conflict("A user with this email already exists"));
-
-            expect(userRepository.findByEmail).toHaveBeenCalledWith("john@example.com");
-        });
-
-        it("should throw error when user is blacklisted via email", async () => {
-            // Mock repository.findByEmail to return null (no existing user)
-            (userRepository.findByEmail as jest.Mock).mockResolvedValue(null);
-
-            // Mock karmaService.isBlacklisted to return true for email
+        it("should throw when email is on the Karma blacklist", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
+            // email blacklisted, phone passes
             (karmaService.isBlacklisted as jest.Mock)
-                .mockResolvedValueOnce(true)  // email blacklisted
-                .mockResolvedValueOnce(false); // phone not blacklisted
+                .mockResolvedValueOnce(true)
+                .mockResolvedValueOnce(false);
 
-            await expect(userService.createUser(mockCreateUserDTO))
-                .rejects
-                .toThrow("User cannot be onboarded due to compliance restrictions");
+            // The service throws a plain Error here (not APIError) — match the exact message
+            await expect(userService.createUser(dto))
+                .rejects.toThrow("User cannot be onboarded due to compliance restrictions");
 
-            expect(userRepository.findByEmail).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("1234567890");
+            // Must not proceed to db.transaction
+            expect(db.transaction).not.toHaveBeenCalled();
         });
 
-        it("should throw error when user is blacklisted via phone", async () => {
-            // Mock repository.findByEmail to return null (no existing user)
-            (userRepository.findByEmail as jest.Mock).mockResolvedValue(null);
-
-            // Mock karmaService.isBlacklisted to return false for email, true for phone
+        it("should throw when phone is on the Karma blacklist", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
+            // email passes, phone blacklisted
             (karmaService.isBlacklisted as jest.Mock)
-                .mockResolvedValueOnce(false)  // email not blacklisted
-                .mockResolvedValueOnce(true);  // phone blacklisted
+                .mockResolvedValueOnce(false)
+                .mockResolvedValueOnce(true);
 
-            await expect(userService.createUser(mockCreateUserDTO))
-                .rejects
-                .toThrow("User cannot be onboarded due to compliance restrictions");
+            await expect(userService.createUser(dto))
+                .rejects.toThrow("User cannot be onboarded due to compliance restrictions");
 
-            expect(userRepository.findByEmail).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("john@example.com");
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("1234567890");
+            expect(db.transaction).not.toHaveBeenCalled();
         });
 
-        it("should handle phone being undefined", async () => {
-            const dtoWithoutPhone = {
-                name: "John Doe",
-                email: "john@example.com"
-            };
+        it("should only run one karma check when no phone is provided", async () => {
+            const dtoWithoutPhone = { name: "Chimdike", email: "chimdike@example.com" };
 
-            // Mock repository.findByEmail to return null (no existing user)
-            (userRepository.findByEmail as jest.Mock).mockResolvedValue(null);
-
-            // Mock karmaService.isBlacklisted to return false for email
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
             (karmaService.isBlacklisted as jest.Mock).mockResolvedValue(false);
-
-            // Mock repository.create to return a userId
             (userRepository.create as jest.Mock).mockResolvedValue(1);
+            (userRepository.findById as jest.Mock).mockResolvedValue(mockUser);
+            (walletService.createWallet as jest.Mock).mockResolvedValue(mockWallet);
 
-            // Mock walletService.createWallet to resolve
-            (walletService.createWallet as jest.Mock).mockResolvedValue({ id: 1, user_id: 1, wallet_type: "MAIN", balance: 0 });
-
-            // Mock repository.findById to return the created user
-            (userRepository.findById as jest.Mock).mockResolvedValue({
-                id: 1,
-                name: "John Doe",
-                email: "john@example.com",
-                phone: null,
-                blacklisted: false,
-                created_at: new Date(),
-                updated_at: new Date()
-            });
-
-
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
 
             await userService.createUser(dtoWithoutPhone);
 
-            expect(karmaService.isBlacklisted).toHaveBeenCalledWith("john@example.com");
+            // phone is undefined — only one karma call (email)
+            expect(karmaService.isBlacklisted).toHaveBeenCalledTimes(1);
+            expect(karmaService.isBlacklisted).toHaveBeenCalledWith(dtoWithoutPhone.email);
+        });
+
+        it("should throw Internal when repository.create returns null", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
+            (karmaService.isBlacklisted as jest.Mock).mockResolvedValue(false);
+            (userRepository.create as jest.Mock).mockResolvedValue(null);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(userService.createUser(dto))
+                .rejects.toThrow("Failed to create user");
+        });
+
+        it("should throw Internal when findById returns null after user creation", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
+            (karmaService.isBlacklisted as jest.Mock).mockResolvedValue(false);
+            (userRepository.create as jest.Mock).mockResolvedValue(1);
+            (walletService.createWallet as jest.Mock).mockResolvedValue(mockWallet);
+            // Wallet created fine but user cannot be retrieved
+            (userRepository.findById as jest.Mock).mockResolvedValue(null);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            await expect(userService.createUser(dto))
+                .rejects.toThrow("Failed to retrieve created user");
+        });
+
+        it("should create user and MAIN wallet atomically when all checks pass", async () => {
+            (userRepository.findByEmail as jest.Mock).mockResolvedValue(undefined);
+            (karmaService.isBlacklisted as jest.Mock).mockResolvedValue(false);
+            (userRepository.create as jest.Mock).mockResolvedValue(1);
+            (userRepository.findById as jest.Mock).mockResolvedValue(mockUser);
+            (walletService.createWallet as jest.Mock).mockResolvedValue(mockWallet);
+
+            const trxMock = jest.fn();
+            (db.transaction as jest.Mock).mockImplementation(async (cb: Function) => cb(trxMock));
+
+            const result = await userService.createUser(dto);
+
+            expect(result).toEqual(mockUser);
+            expect(userRepository.create).toHaveBeenCalledWith(
+                { name: dto.name, email: dto.email, phone: dto.phone },
+                trxMock
+            );
+            expect(walletService.createWallet).toHaveBeenCalledWith(1, WalletType.MAIN, trxMock);
+            expect(userRepository.findById).toHaveBeenCalledWith(1, trxMock);
         });
     });
 
+    // ── getUserWithWallet ──────────────────────────────────────────────────────
+
     describe("getUserWithWallet", () => {
-        it("should return user with wallet when user exists", async () => {
-            const userId = 1;
+        it("should throw NotFound when user does not exist", async () => {
+            (userRepository.findById as jest.Mock).mockResolvedValue(undefined);
 
-            // Mock repository.findById to return a user
-            (userRepository.findById as jest.Mock).mockResolvedValue({
-                id: 1,
-                name: "John Doe",
-                email: "john@example.com",
-                phone: "1234567890",
-                blacklisted: false,
-                created_at: new Date(),
-                updated_at: new Date()
-            });
+            await expect(userService.getUserWithWallet(999))
+                .rejects.toThrow("User not found");
 
-            // Mock walletService.findByUserId to return a wallet
-            (walletService.findByUserId as jest.Mock).mockResolvedValue({
-                id: 1,
-                user_id: 1,
-                wallet_type: "MAIN",
-                balance: 1000,
-                created_at: new Date(),
-                updated_at: new Date()
-            });
-
-            const result = await userService.getUserWithWallet(userId);
-
-            expect(result).toEqual({
-                id: 1,
-                name: "John Doe",
-                email: "john@example.com",
-                phone: "1234567890",
-                blacklisted: false,
-                created_at: expect.any(Date),
-                updated_at: expect.any(Date),
-                wallet: {
-                    id: 1,
-                    user_id: 1,
-                    wallet_type: "MAIN",
-                    balance: 1000,
-                    created_at: expect.any(Date),
-                    updated_at: expect.any(Date)
-                }
-            });
-
-            expect(userRepository.findById).toHaveBeenCalledWith(userId);
-            expect(walletService.findByUserId).toHaveBeenCalledWith(userId);
+            // Must not reach wallet lookup
+            expect(walletService.findByUserId).not.toHaveBeenCalled();
         });
 
-        it("should throw NotFound error when user doesn't exist", async () => {
-            const userId = 999;
+        it("should return user merged with wallet on success", async () => {
+            (userRepository.findById as jest.Mock).mockResolvedValue(mockUser);
+            (walletService.findByUserId as jest.Mock).mockResolvedValue(mockWallet);
 
-            // Mock repository.findById to return null (user not found)
-            (userRepository.findById as jest.Mock).mockResolvedValue(null);
+            const result = await userService.getUserWithWallet(1);
 
-            await expect(userService.getUserWithWallet(userId))
-                .rejects
-                .toThrow(APIError.NotFound("User not found"));
+            expect(result).toEqual({ ...mockUser, wallet: mockWallet });
+            expect(userRepository.findById).toHaveBeenCalledWith(1);
+            expect(walletService.findByUserId).toHaveBeenCalledWith(1);
+        });
 
-            expect(userRepository.findById).toHaveBeenCalledWith(userId);
+        it("should propagate error when walletService throws", async () => {
+            (userRepository.findById as jest.Mock).mockResolvedValue(mockUser);
+            (walletService.findByUserId as jest.Mock).mockRejectedValue(
+                new Error("Wallet not found")
+            );
+
+            await expect(userService.getUserWithWallet(1))
+                .rejects.toThrow("Wallet not found");
         });
     });
 });
