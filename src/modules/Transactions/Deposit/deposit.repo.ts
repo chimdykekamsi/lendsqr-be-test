@@ -17,8 +17,8 @@ export class DepositRepository {
         return id || null;
     }
 
-    async findById(transaction_id: number, database: Knex | Knex.Transaction = db): Promise<FundingRow | null> {
-        const funding = await database<FundingRow>(this.table).where({ transaction_id }).first();
+    async findById(id: number, database: Knex | Knex.Transaction = db): Promise<FundingRow | null> {
+        const funding = await database<FundingRow>(this.table).where({ id }).first();
         return funding ?? null;
     }
 
