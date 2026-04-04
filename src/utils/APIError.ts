@@ -1,5 +1,6 @@
 // src/lib/errors/APIError.ts
 import { ZodError } from "zod";
+import { winstonLogger } from "./logger";
 
 // Define reusable error detail types
 export type ErrorDetails = string | Record<string, unknown> | unknown[] | undefined;
@@ -16,7 +17,7 @@ export class APIError extends Error {
         Object.setPrototypeOf(this, new.target.prototype);
 
         if (process.env.NODE_ENV !== "production") {
-            console.error(this.stack);
+            winstonLogger.error(this.stack);
         }
     }
 
