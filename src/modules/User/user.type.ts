@@ -4,7 +4,6 @@ export interface UserRow {
     email: string;
     name: string;
     phone: string | null;
-    blacklisted: boolean;
     created_at: Date;
     updated_at: Date;
 }

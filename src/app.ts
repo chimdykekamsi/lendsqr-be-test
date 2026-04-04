@@ -15,6 +15,7 @@ export const createApp = (): Application => {
     app.use(express.urlencoded({ extended: true }));
 
     app.use(cors());
+    app.use(rateLimiter(50, 1));
 
     // --- Health Check ---
     app.get("/", (_, res) => {

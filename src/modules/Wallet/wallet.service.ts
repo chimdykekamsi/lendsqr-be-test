@@ -3,6 +3,7 @@ import { WalletRow, WalletType } from "./wallet.type";
 import { Knex } from "knex";
 import { walletRepository } from "./wallet.repo";
 import { Currency, CURRENCY_CONFIG } from "../Transactions/transaction.type";
+import { APIError } from "@/utils/APIError";
 
 export class WalletService {
     private readonly repository = walletRepository;
@@ -16,7 +17,7 @@ export class WalletService {
 
         const id = await this.repository.create({ user_id, wallet_type }, database);
         if (!id) {
-            throw new Error("Failed to create wallet");
+            throw APIError.Internal("Failed to create wallet");
         }
 
         const wallet = await this.repository.findById(id, database);
@@ -30,7 +31,7 @@ export class WalletService {
     ): Promise<WalletRow> {
         const wallet = await this.repository.findByUserId(user_id, database);
         if (!wallet) {
-            throw new Error("Wallet not found");
+            throw APIError.NotFound("Wallet not found");
         }
         wallet.balance = Number((wallet.balance / this.currencyConfig.multiplier).toFixed(this.currencyConfig.decimal_places));
         return wallet;
@@ -43,7 +44,7 @@ export class WalletService {
     ): Promise<WalletRow> {
         const wallet = await this.repository.findByUserId(user_id, database, lock);
         if (!wallet) {
-            throw new Error("Wallet not found");
+            throw APIError.NotFound("Wallet not found");
         }
         return wallet;
     }

@@ -32,7 +32,7 @@ export class UserService {
     ]);
 
     if (emailBlacklisted || phoneBlacklisted) {
-      throw new Error(
+      throw APIError.Forbidden(
         "User cannot be onboarded due to compliance restrictions"
       );
     }

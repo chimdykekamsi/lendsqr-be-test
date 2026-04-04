@@ -61,14 +61,14 @@ export class DepositService {
                 throw APIError.Conflict("Transaction is not in pending state");
             }
 
-            // Update transaction status to COMPLETED
-            const updatedTransaction = await transactionService.updateTransactionStatus(transaction.id, TransactionStatus.SUCCESSFUL, trx);
-
             // Get the user's wallet
             const userWallet = await walletService.findByUserIdRaw(transaction.user_id!, trx);
             if (!userWallet) {
                 throw APIError.NotFound("User wallet not found");
             }
+
+            // Update transaction status to COMPLETED
+            const updatedTransaction = await transactionService.updateTransactionStatus(transaction.id, TransactionStatus.SUCCESSFUL, trx);
 
             // Get the system wallet
             const systemWallet = await walletService.findSystemWallet(WalletType.SYSTEM, trx);
