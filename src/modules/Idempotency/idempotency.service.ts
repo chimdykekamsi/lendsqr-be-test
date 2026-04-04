@@ -29,6 +29,18 @@ export class IdempotencyService {
   ): Promise<void> {
     const requestHash = hashObject(requestBody);
 
+    // Check if an expired key exists and delete it
+    const existing = await db<IdempotencyKeyRow>(this.table)
+      .where({ user_id: userId, key })
+      .where("expires_at", "<=", new Date())
+      .first();
+
+    if (existing) {
+      await db<IdempotencyKeyRow>(this.table)
+        .where({ id: existing.id })
+        .del();
+    }
+
     await db<IdempotencyKeyRow>(this.table).insert({
       user_id: userId,
       key,

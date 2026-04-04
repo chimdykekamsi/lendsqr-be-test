@@ -118,10 +118,10 @@ export class DepositService {
             // console.log({ fundingId });
             if (!fundingId) throw APIError.Internal("Failed to create funding record");
 
-            const funding = await this.repository.findById(fundingId, trx);
+            const funding = await this.repository.findByTransactionId(transaction.id, trx);
             // console.log({ funding })
             if (!funding) {
-                throw APIError.Internal("Failed to create funding record");
+                throw APIError.Internal("Funding record not found");
             }
 
             return { transaction: transactionService.sanitize(updatedTransaction), funding };
