@@ -23,7 +23,7 @@
       ]
     },
     /* Fix TS 6 warnings */
-    "ignoreDeprecations": "5.0"
+    "ignoreDeprecations": "6.0"
   },
   "include": [
     "src"
